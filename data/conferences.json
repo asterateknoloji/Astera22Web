@@ -1,0 +1,11 @@
+[
+    {
+        "id": "120-TOPLAN1",
+        "dept": "120",
+        "name": "TOPLANTI1",
+        "exten": "8900",
+        "pin": "8900",
+        "record": true,
+        "record_format": "wav"
+    }
+]

@@ -1,0 +1,32 @@
+[
+    {
+        "id": "120out1",
+        "dept": "120",
+        "name": "Türkiye 0…",
+        "pattern": "_0X.",
+        "strip": 1,
+        "prefix": "90",
+        "trunk": "908503338006",
+        "pin": ""
+    },
+    {
+        "id": "120out2",
+        "dept": "120",
+        "name": "90 ile",
+        "pattern": "_90X.",
+        "strip": 0,
+        "prefix": "",
+        "trunk": "908503338006",
+        "pin": ""
+    },
+    {
+        "id": "120out3",
+        "dept": "120",
+        "name": "Uluslararası 00",
+        "pattern": "_00X.",
+        "strip": 2,
+        "prefix": "",
+        "trunk": "908503338006",
+        "pin": ""
+    }
+]

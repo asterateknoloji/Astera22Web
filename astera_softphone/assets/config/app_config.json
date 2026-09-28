@@ -1,0 +1,11 @@
+{
+  "sip": {
+    "server": "santral.astera.com.tr",
+    "port": 5060,
+    "transport": "udp",
+    "username": "1001",
+    "authUsername": "120_1020",
+    "displayName": "1001",
+    "localSipPort": 0
+  }
+}

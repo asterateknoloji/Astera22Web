@@ -1,0 +1,18 @@
+[
+    {
+        "id": "120in-catchall",
+        "did": "908503338006",
+        "dept": "120",
+        "dest": "120-mesai-001",
+        "name": "Diğer gelen numaralar",
+        "dest_type": "time"
+    },
+    {
+        "id": "120in-908503338008",
+        "did": "908503338008",
+        "dept": "120",
+        "dest": "120-mesai-001",
+        "name": "908503338008 gelen çağrılar",
+        "dest_type": "time"
+    }
+]

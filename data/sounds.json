@@ -1,0 +1,18 @@
+[
+    {
+        "id": "120-anamenu",
+        "dept": "120",
+        "name": "anamenu",
+        "playback": "custom/120/anamenu",
+        "file": "120/anamenu.WAV",
+        "path": "/var/lib/asterisk/sounds/custom/120/anamenu.WAV"
+    },
+    {
+        "id": "120-Boom_Makina_mesaidisi",
+        "dept": "120",
+        "name": "Boom_Makina_mesaidisi",
+        "playback": "custom/120/Boom_Makina_mesaidisi",
+        "file": "120/Boom_Makina_mesaidisi.wav",
+        "path": "/var/lib/asterisk/sounds/custom/120/Boom_Makina_mesaidisi.wav"
+    }
+]

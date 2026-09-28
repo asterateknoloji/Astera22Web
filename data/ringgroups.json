@@ -1,0 +1,26 @@
+[
+    {
+        "id": "120-SATIS",
+        "dept": "120",
+        "name": "SATIS",
+        "description": "satıs",
+        "exten": "8100",
+        "strategy": "hunt",
+        "ring_time": 20,
+        "confirm_calls": false,
+        "announcement": "",
+        "music_class": "default",
+        "cid_prefix": "Satis",
+        "skip_busy": true,
+        "timeout": 25,
+        "timeout_type": "hangup",
+        "timeout_dest": "hangup",
+        "members": [
+            "120",
+            "122"
+        ],
+        "language": "en",
+        "record": true,
+        "record_format": "wav"
+    }
+]

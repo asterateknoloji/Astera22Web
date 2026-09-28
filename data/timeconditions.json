@@ -1,0 +1,31 @@
+[
+    {
+        "id": "120-mesai-001",
+        "dept": "120",
+        "name": "Mesaiici",
+        "timezone": "Europe/Istanbul",
+        "rules": [
+            {
+                "name": "Normal mesai",
+                "start": "09:00",
+                "end": "18:00",
+                "days": [
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri"
+                ]
+            }
+        ],
+        "exceptions": [],
+        "turkey_holidays": false,
+        "turkey_half_days": false,
+        "time": "09:00-18:00",
+        "days": "mon&tue&wed&thu&fri",
+        "true_type": "ivr",
+        "true_dest": "120-8500",
+        "false_type": "ivr",
+        "false_dest": "120-8501"
+    }
+]

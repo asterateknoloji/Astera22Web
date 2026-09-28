@@ -1,0 +1,399 @@
+[
+    {
+        "exten": "1001",
+        "name": "Abone 1001",
+        "password": "1001pass",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1001",
+        "dept": "genel",
+        "id": "genel-1001",
+        "sipuser": "1001",
+        "authuser": "1001"
+    },
+    {
+        "exten": "1002",
+        "name": "Abone 1002",
+        "password": "1002pass",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1002",
+        "dept": "genel",
+        "id": "genel-1002",
+        "sipuser": "1002",
+        "authuser": "1002"
+    },
+    {
+        "id": "120-120",
+        "dept": "120",
+        "exten": "120",
+        "sipuser": "120",
+        "name": "Tuncay Bilgin",
+        "password": "120!120",
+        "max_contacts": 1,
+        "codecs": [
+            "ulaw",
+            "alaw",
+            "gsm",
+            "g722",
+            "opus"
+        ],
+        "callerid": "Tuncay Bilgin",
+        "authuser": "120abc",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "vm_email": "",
+        "cid_num": "",
+        "record": true,
+        "record_format": "wav",
+        "ringtime": 30,
+        "followme": "",
+        "fallback_type": "hangup",
+        "fallback_dest": "hangup",
+        "dtmf": "rfc4733",
+        "language": "en",
+        "transport": "udp",
+        "qualify": 0,
+        "webrtc": false
+    },
+    {
+        "id": "120-121",
+        "dept": "120",
+        "exten": "121",
+        "sipuser": "121",
+        "authuser": "121",
+        "name": "Webrtc Abone1",
+        "password": "121121",
+        "max_contacts": 1,
+        "codecs": [
+            "ulaw",
+            "alaw"
+        ],
+        "callerid": "Webrtc Abone1",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "vm_email": "",
+        "cid_num": "",
+        "ringtime": 10,
+        "followme": "",
+        "dtmf": "rfc4733",
+        "language": "tr",
+        "transport": "udp",
+        "qualify": 0,
+        "webrtc": true,
+        "record": true,
+        "record_format": "wav",
+        "fallback_type": "external",
+        "fallback_dest": "905307711717"
+    },
+    {
+        "id": "genel-1003",
+        "dept": "genel",
+        "exten": "1003",
+        "sipuser": "1003",
+        "authuser": "1003",
+        "name": "WebRTC 1003",
+        "password": "1003pass",
+        "max_contacts": 2,
+        "codecs": [
+            "opus",
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "WebRTC 1003",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "vm_email": "",
+        "cid_num": "",
+        "ringtime": 30,
+        "followme": "",
+        "dtmf": "rfc4733",
+        "language": "en",
+        "transport": "udp",
+        "qualify": 0,
+        "webrtc": true
+    },
+    {
+        "id": "120-122",
+        "dept": "120",
+        "exten": "122",
+        "sipuser": "122",
+        "authuser": "122abc",
+        "name": "122",
+        "password": "nt1975tn",
+        "max_contacts": 1,
+        "codecs": [
+            "ulaw",
+            "alaw"
+        ],
+        "callerid": "122",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "vm_email": "",
+        "cid_num": "",
+        "record": true,
+        "record_format": "wav",
+        "ringtime": 30,
+        "followme": "",
+        "fallback_type": "hangup",
+        "fallback_dest": "hangup",
+        "dtmf": "rfc4733",
+        "language": "en",
+        "transport": "udp",
+        "qualify": 0,
+        "webrtc": false
+    },
+    {
+        "id": "120-123",
+        "dept": "120",
+        "exten": "123",
+        "sipuser": "123",
+        "authuser": "123",
+        "name": "Abone 123",
+        "password": "nt1975tn",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 123",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1001",
+        "dept": "120",
+        "exten": "1001",
+        "sipuser": "120_1001",
+        "authuser": "120_1001",
+        "name": "Abone 1001",
+        "password": "Asd1321!.",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1001",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1010",
+        "dept": "120",
+        "exten": "1010",
+        "sipuser": "1010",
+        "authuser": "1010",
+        "name": "Abone 1010",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1010",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1011",
+        "dept": "120",
+        "exten": "1011",
+        "sipuser": "1011",
+        "authuser": "1011",
+        "name": "Abone 1011",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1011",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1012",
+        "dept": "120",
+        "exten": "1012",
+        "sipuser": "1012",
+        "authuser": "1012",
+        "name": "Abone 1012",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1012",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1013",
+        "dept": "120",
+        "exten": "1013",
+        "sipuser": "1013",
+        "authuser": "1013",
+        "name": "Abone 1013",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1013",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1014",
+        "dept": "120",
+        "exten": "1014",
+        "sipuser": "1014",
+        "authuser": "1014",
+        "name": "Abone 1014",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1014",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1015",
+        "dept": "120",
+        "exten": "1015",
+        "sipuser": "1015",
+        "authuser": "1015",
+        "name": "Abone 1015",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1015",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1016",
+        "dept": "120",
+        "exten": "1016",
+        "sipuser": "1016",
+        "authuser": "1016",
+        "name": "Abone 1016",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1016",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1017",
+        "dept": "120",
+        "exten": "1017",
+        "sipuser": "1017",
+        "authuser": "1017",
+        "name": "Abone 1017",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1017",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1018",
+        "dept": "120",
+        "exten": "1018",
+        "sipuser": "1018",
+        "authuser": "1018",
+        "name": "Abone 1018",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1018",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1019",
+        "dept": "120",
+        "exten": "1019",
+        "sipuser": "1019",
+        "authuser": "1019",
+        "name": "Abone 1019",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1019",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    },
+    {
+        "id": "120-1020",
+        "dept": "120",
+        "exten": "1020",
+        "sipuser": "1020",
+        "authuser": "1020",
+        "name": "Abone 1020",
+        "password": "123abc",
+        "max_contacts": 1,
+        "codecs": [
+            "alaw",
+            "ulaw"
+        ],
+        "callerid": "Abone 1020",
+        "vm_enabled": false,
+        "vm_pin": "1234",
+        "ringtime": 30,
+        "followme": ""
+    }
+]

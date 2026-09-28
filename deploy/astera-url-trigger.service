@@ -1,0 +1,21 @@
+[Unit]
+Description=ASTERA CRM URL Trigger Worker
+After=network-online.target asterisk.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=astera-panel
+Group=astera-panel
+WorkingDirectory=/var/www/astera
+ExecStart=/usr/bin/php /var/www/astera/bin/url_trigger_worker.php
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /var/www/astera/data
+
+[Install]
+WantedBy=multi-user.target

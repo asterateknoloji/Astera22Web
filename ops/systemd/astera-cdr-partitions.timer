@@ -1,0 +1,11 @@
+[Unit]
+Description=Create Astera CDR partitions ahead of time
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=30m
+Persistent=true
+Unit=astera-cdr-partitions.service
+
+[Install]
+WantedBy=timers.target

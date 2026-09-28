@@ -1,0 +1,20 @@
+[
+    {
+        "id": "genel",
+        "code": "genel",
+        "name": "Varsayılan firma",
+        "record": true,
+        "cid": "",
+        "panel_user": "",
+        "panel_pass": ""
+    },
+    {
+        "id": "120",
+        "code": "120",
+        "name": "Astera",
+        "record": true,
+        "cid": "02122130686",
+        "panel_user": "astera",
+        "panel_pass": "astera"
+    }
+]

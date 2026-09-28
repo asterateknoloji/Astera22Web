@@ -1,0 +1,20 @@
+---
+description: PostgreSQL-first data architecture and indexing standards
+alwaysApply: true
+---
+
+# Database Architecture
+
+- Store all operational/business data in normalized PostgreSQL tables. Do not use JSON files or `astera_config_store` JSON blobs as the authoritative store for CRM, calls, notes, users, or other growing datasets.
+- JSON may only hold small static configuration or disposable cache data.
+- Every tenant-owned table must have `dept_id`, foreign keys, constraints, timestamps, and an explicit tenant-scoped index.
+- Create versioned, idempotent migrations before implementing features that introduce or change persisted data.
+- Design indexes from actual filter, join, and sort paths; verify important queries with `EXPLAIN (ANALYZE, BUFFERS)`.
+- Normalize searchable phone numbers into a dedicated indexed column while retaining the original display value.
+- Use PostgreSQL full-text search or `pg_trgm` GIN indexes for customer, contact, address, and note searches.
+- Use keyset pagination for large lists; do not use deep `OFFSET` pagination.
+- CDR must support at least 100,000,000 rows: partition by call date, use tenant/date B-tree indexes, `linkedid`/`uniqueid` indexes, appropriate source/destination indexes, and BRIN on time for large partitions.
+- Define retention, partition maintenance, backup, and archive policies for CDR before production growth.
+- Keep audio binaries outside PostgreSQL. Store recording path/object key, tenant, call ID, format, size, duration, checksum, and timestamps in indexed database tables.
+- Use transactions for multi-table writes and preserve tenant isolation in every query.
+- Do not extend the current CRM JSON stores; migrate them to proper relational tables before adding the next CRM feature.

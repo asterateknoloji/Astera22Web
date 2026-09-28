@@ -1,0 +1,45 @@
+[
+    {
+        "id": "120-8500",
+        "dept": "120",
+        "name": "Anamenu",
+        "language": "tr",
+        "sound": "custom/120/anamenu",
+        "timeout_type": "hangup",
+        "timeout_dest": "hangup",
+        "digits": [
+            {
+                "type": "queue",
+                "dest": "120-SATIS"
+            },
+            {
+                "type": "ringgroup",
+                "dest": "120-SATIS"
+            },
+            {
+                "type": "extension",
+                "dest": "120-123"
+            }
+        ],
+        "direct_dial": true,
+        "blocked_extensions": [
+            "120"
+        ],
+        "blocked_type": "queue",
+        "blocked_dest": "120-SATIS"
+    },
+    {
+        "id": "120-8501",
+        "dept": "120",
+        "name": "mesaidisi",
+        "language": "tr",
+        "sound": "custom/120/Boom_Makina_mesaidisi",
+        "timeout_type": "hangup",
+        "timeout_dest": "hangup",
+        "direct_dial": true,
+        "blocked_extensions": [],
+        "blocked_type": "hangup",
+        "blocked_dest": "hangup",
+        "digits": []
+    }
+]
