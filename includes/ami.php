@@ -502,9 +502,14 @@ function pbx_blf_status(string $deptId): array
     }
 
     $states = [];
+    $sipByExtension = [];
     foreach ($bySip as $sip => $extension) {
+        $extensionNumber = (string) ($extension['exten'] ?? '');
+        if ($extensionNumber !== '') {
+            $sipByExtension[$extensionNumber] = $sip;
+        }
         $states[$sip] = [
-            'extension' => (string) ($extension['exten'] ?? ''),
+            'extension' => $extensionNumber,
             'name' => (string) ($extension['name'] ?? ''),
             'state' => isset($registered[$sip]) ? 'available' : 'offline',
             'label' => isset($registered[$sip]) ? 'Müsait' : 'Çevrimdışı',
@@ -718,6 +723,32 @@ function pbx_blf_status(string $deptId): array
             $states[$sip]['call_age'] = $callAge;
             $states[$sip]['direction'] = $direction;
         }
+    }
+
+    // Dial sırasında Asterisk bazı cihazlarda aranan PJSIP kanalını kısa süre
+    // kanal listesine eklemeyebilir. Arayan kanalın hedefinden aranan tarafın
+    // "Çalıyor" durumunu tamamla; aksi halde yalnızca arayan taraf görünür.
+    foreach ($states as $callerSip => $callerState) {
+        if (
+            ($callerState['state'] ?? '') !== 'ringing'
+            || ($callerState['direction'] ?? '') !== 'outgoing'
+        ) {
+            continue;
+        }
+        $targetSip = $sipByExtension[(string) ($callerState['peer'] ?? '')] ?? '';
+        if (
+            $targetSip === ''
+            || $targetSip === $callerSip
+            || ($states[$targetSip]['state'] ?? '') === 'talking'
+        ) {
+            continue;
+        }
+        $states[$targetSip]['state'] = 'ringing';
+        $states[$targetSip]['label'] = 'Çalıyor';
+        $states[$targetSip]['peer'] = (string) ($callerState['extension'] ?? '');
+        $states[$targetSip]['call_id'] = (string) ($callerState['call_id'] ?? '');
+        $states[$targetSip]['call_age'] = max(0, (int) ($callerState['call_age'] ?? 0));
+        $states[$targetSip]['direction'] = 'incoming';
     }
 
     return [

@@ -584,7 +584,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
     if (name.isEmpty || name.toLowerCase() == 'unknown') return null;
     final nameDigits = name.replaceAll(RegExp(r'\D'), '');
     final numberDigits = number.replaceAll(RegExp(r'\D'), '');
-    if (nameDigits.isNotEmpty && nameDigits == numberDigits) return null;
+    final numericOnly = RegExp(r'^[\s+().-]*\d[\s+().\d-]*$').hasMatch(name);
+    if (numericOnly && nameDigits == numberDigits) return null;
     return name;
   }
 
@@ -786,7 +787,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
   }
 
   Future<void> _sendPresence(String method, List<ExtensionPresence> rows) {
-    final statuses = rows.map((row) {
+    final effectiveRows = _withLocalCallPresence(rows);
+    final statuses = effectiveRows.map((row) {
       final label = switch (row.state) {
         'available' => 'Müsait',
         'ringing' => row.direction == 'outgoing' ? 'Aranıyor' : 'Çalıyor',
@@ -797,13 +799,66 @@ class _AccountsScreenState extends State<AccountsScreen> {
     }).toList();
     return _windowChannel.invokeMethod<void>(method, {
       'title': 'Meşguliyet',
-      'labels': rows.map((row) => row.name).toList(),
+      'labels': effectiveRows.map((row) => row.name).toList(),
       'statuses': statuses,
-      'states': rows.map((row) => row.state).toList(),
-      'peers': rows.map((row) => row.peer).toList(),
-      'directions': rows.map((row) => row.direction).toList(),
-      'numbers': rows.map((row) => row.extension).toList(),
+      'states': effectiveRows.map((row) => row.state).toList(),
+      'peers': effectiveRows.map((row) => row.peer).toList(),
+      'directions': effectiveRows.map((row) => row.direction).toList(),
+      'numbers': effectiveRows.map((row) => row.extension).toList(),
     });
+  }
+
+  List<ExtensionPresence> _withLocalCallPresence(List<ExtensionPresence> rows) {
+    if (widget.repository.accounts.isEmpty) return rows;
+    final event = widget.registration.callEvent;
+    final activeCall = switch (event.state) {
+      CallState.calling ||
+      CallState.ringing ||
+      CallState.incoming ||
+      CallState.connected ||
+      CallState.held => true,
+      _ => false,
+    };
+    if (!activeCall) return rows;
+
+    final activeId = widget.repository.activeAccountId;
+    final account = widget.repository.accounts.firstWhere(
+      (item) => item.id == activeId,
+      orElse: () => widget.repository.accounts.first,
+    );
+    final accountNumbers = <String>{
+      account.username,
+      if (account.username.contains('_')) account.username.split('_').last,
+      account.displayName.replaceAll(RegExp(r'\D'), ''),
+    }..removeWhere((number) => number.isEmpty);
+    final ownIndex = rows.indexWhere(
+      (row) => accountNumbers.contains(row.extension),
+    );
+    if (ownIndex < 0) return rows;
+
+    final match = RegExp(
+      r'sip:([^@;>]+)',
+      caseSensitive: false,
+    ).firstMatch(event.remoteUri);
+    final peerNumber = match?.group(1) ?? event.remoteUri;
+    final peerName = _callerNameFromUri(event.remoteUri, peerNumber);
+    final peer = peerName == null ? peerNumber : '$peerName · $peerNumber';
+    final incoming =
+        event.state == CallState.incoming || _displayedIncomingUri != null;
+    final talking =
+        event.state == CallState.connected || event.state == CallState.held;
+    final current = rows[ownIndex];
+    final result = List<ExtensionPresence>.of(rows);
+    result[ownIndex] = ExtensionPresence(
+      extension: current.extension,
+      name: current.name,
+      state: talking ? 'talking' : 'ringing',
+      label: talking ? 'Görüşmede' : (incoming ? 'Çalıyor' : 'Aranıyor'),
+      peer: peer,
+      direction: incoming ? 'incoming' : 'outgoing',
+      elapsedSeconds: current.elapsedSeconds,
+    );
+    return result;
   }
 
   Future<void> _answerCall() async {
