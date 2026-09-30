@@ -172,7 +172,7 @@ function can_page(string $page): bool
     if (is_super()) {
         return true;
     }
-    return !in_array($page, ['departments', 'system', 'logs', 'security', 'ssl'], true);
+    return !in_array($page, ['departments', 'contexts', 'system', 'logs', 'security', 'ssl'], true);
 }
 
 function migrate_tenants(): void

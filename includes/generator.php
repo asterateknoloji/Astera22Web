@@ -1075,6 +1075,7 @@ CONF;
     }
 
     $blocks[] = generate_from_pstn();
+    $blocks[] = custom_context_dialplan();
 
     $body = implode("\n", $blocks);
     return <<<CONF

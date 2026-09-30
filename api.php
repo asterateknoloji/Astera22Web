@@ -1189,6 +1189,63 @@ try {
             store_delete('customs', 'id', $id);
             json_out(array_merge(['ok' => true], apply_to_pbx()));
 
+        case 'context_detail':
+            if (!is_super()) {
+                json_out(['ok' => false, 'error' => 'Yetkisiz işlem'], 403);
+            }
+            $contextName = trim((string) ($_POST['context'] ?? ''));
+            if (!preg_match('/^[A-Za-z0-9_.-]+$/', $contextName)) {
+                json_out(['ok' => false, 'error' => 'Geçersiz context'], 422);
+            }
+            $known = array_column(pbx_context_inventory(), null, 'name');
+            if (!isset($known[$contextName])) {
+                json_out(['ok' => false, 'error' => 'Context bulunamadı'], 404);
+            }
+            json_out([
+                'ok' => true,
+                'context' => $contextName,
+                'output' => pbx_cli('dialplan show ' . $contextName),
+            ]);
+
+        case 'custom_context_save':
+            if (!is_super()) {
+                json_out(['ok' => false, 'error' => 'Yetkisiz işlem'], 403);
+            }
+            if (!custom_context_schema_ready()) {
+                json_out(['ok' => false, 'error' => 'Özel context veritabanı migration’ı uygulanmamış'], 503);
+            }
+            $dept = require_dept_id();
+            $contextId = ast_sanitize_id((string) ($_POST['context_id'] ?? ''));
+            if ($contextId === '') {
+                json_out(['ok' => false, 'error' => 'Context kodu zorunlu'], 422);
+            }
+            $description = trim((string) ($_POST['description'] ?? ''));
+            if (mb_strlen($description) > 255) {
+                json_out(['ok' => false, 'error' => 'Açıklama 255 karakteri aşamaz'], 422);
+            }
+            try {
+                $steps = custom_context_parse_steps((string) ($_POST['steps_text'] ?? ''));
+                custom_context_save($dept, $contextId, $description, $steps);
+            } catch (InvalidArgumentException $exception) {
+                json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+            }
+            json_out(array_merge(['ok' => true], apply_to_pbx()));
+
+        case 'custom_context_delete':
+            if (!is_super()) {
+                json_out(['ok' => false, 'error' => 'Yetkisiz işlem'], 403);
+            }
+            if (!custom_context_schema_ready()) {
+                json_out(['ok' => false, 'error' => 'Özel context veritabanı migration’ı uygulanmamış'], 503);
+            }
+            $dept = ast_sanitize_id((string) ($_POST['dept'] ?? ''));
+            $contextId = ast_sanitize_id((string) ($_POST['context_id'] ?? ''));
+            if ($dept === '' || $contextId === '' || custom_context_find($dept, $contextId) === null) {
+                json_out(['ok' => false, 'error' => 'Özel context bulunamadı'], 404);
+            }
+            custom_context_delete($dept, $contextId);
+            json_out(array_merge(['ok' => true], apply_to_pbx()));
+
         case 'sound_list':
             json_out(['ok' => true, 'files' => pbx_custom_sounds(current_dept_id()), 'moh' => pbx_moh_files(current_dept_id())]);
 

@@ -1828,6 +1828,79 @@ const Astera = {
         });
     },
 
+    pageContexts() {
+        const open = (row = {}) => {
+            this.modal(`
+                <h3>${row.context_id ? 'Özel context düzenle' : 'Özel context ekle'}</h3>
+                <form id="contextForm">
+                    ${this.deptField(row.dept_id)}
+                    <label>Context kodu
+                        <input name="context_id" required value="${row.context_id || ''}"
+                            ${row.context_id ? 'readonly' : ''} placeholder="entegrasyon">
+                    </label>
+                    <label>Açıklama<input name="description" maxlength="255"
+                        value="${row.description || ''}" placeholder="CRM yönlendirmesi"></label>
+                    <label>Dialplan adımları
+                        <textarea name="steps_text" rows="10" required
+                            placeholder="s | 1 | NoOp | Özel context&#10;s | n | Playback | custom/karsilama&#10;s | n | Hangup |">${row.steps_text || ''}</textarea>
+                    </label>
+                    <p class="muted">
+                        Her satır: <code>extension | priority | application | veri</code>.
+                        Örnek: <code>s | 1 | Dial | PJSIP/123,30</code>
+                    </p>
+                    <div class="modal-actions">
+                        <button class="btn" type="button" id="c">Vazgeç</button>
+                        <button class="btn primary">Kaydet</button>
+                    </div>
+                </form>
+            `, { closeOnBackdrop: false });
+            document.getElementById('c').onclick = () => this.closeModal();
+            this.formSubmit(document.getElementById('contextForm'), 'custom_context_save');
+        };
+
+        document.getElementById('addContext').onclick = () => {
+            if (!(window.ASTERA.dept || (window.ASTERA.depts || []).length)) {
+                return this.toast('Önce firma ekleyin', true);
+            }
+            open();
+        };
+        document.querySelectorAll('[data-edit-context]').forEach((button) => {
+            button.onclick = () => open(JSON.parse(button.dataset.editContext));
+        });
+        document.querySelectorAll('[data-delete-context]').forEach((button) => {
+            button.onclick = async () => {
+                if (!confirm('Özel context silinsin mi?')) return;
+                try {
+                    await this.post('custom_context_delete', {
+                        context_id: button.dataset.deleteContext,
+                        dept: button.dataset.contextDept
+                    });
+                    location.reload();
+                } catch (error) {
+                    this.toast(error.message, true);
+                }
+            };
+        });
+        document.querySelectorAll('[data-view-context]').forEach((button) => {
+            button.onclick = async () => {
+                try {
+                    const result = await this.post('context_detail', { context: button.dataset.viewContext });
+                    this.modal(`
+                        <h3><code>${button.dataset.viewContext}</code></h3>
+                        <pre class="log" id="contextDetail"></pre>
+                        <div class="modal-actions">
+                            <button class="btn" type="button" id="c">Kapat</button>
+                        </div>
+                    `);
+                    document.getElementById('contextDetail').textContent = result.output || 'Boş context';
+                    document.getElementById('c').onclick = () => this.closeModal();
+                } catch (error) {
+                    this.toast(error.message, true);
+                }
+            };
+        });
+    },
+
     pageSounds() {
         const bind = (id) => {
             const form = document.getElementById(id);

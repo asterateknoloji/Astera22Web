@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASTERA · <?= e(ucfirst(str_replace('_', ' ', current_page()))) ?></title>
-<link rel="stylesheet" href="assets/css/app.css?v=43">
+<link rel="stylesheet" href="assets/css/app.css?v=45">
 </head>
 <body>
 <aside class="rail">
@@ -77,9 +77,10 @@
         </details>
         <?php if (is_super()): ?>
             <details class="nav-group" name="rail-menu"
-                <?= in_array(current_page(), ['logs', 'security', 'ssl', 'system'], true) ? 'open' : '' ?>>
+                <?= in_array(current_page(), ['contexts', 'logs', 'security', 'ssl', 'system'], true) ? 'open' : '' ?>>
                 <summary>Sistem</summary>
                 <div class="nav-group-items">
+                    <a class="<?= nav_active('contexts') ?>" href="index.php?p=contexts">Dialplan context’leri</a>
                     <a class="<?= nav_active('logs') ?>" href="index.php?p=logs">Log</a>
                     <a class="<?= nav_active('security') ?>" href="index.php?p=security">Güvenlik / IP İzinleri</a>
                     <a class="<?= nav_active('ssl') ?>" href="index.php?p=ssl">SSL Sertifikası</a>
@@ -127,6 +128,7 @@
                 'reports' => 'Raporlama',
                 'cdr' => 'Çağrı listesi',
                 'queue_log' => 'Kuyruk olayları',
+                'contexts' => 'Dialplan context’leri',
                 'logs' => 'Asterisk log',
                 'security' => 'Güvenlik / IP izinleri',
                 'ssl' => 'SSL sertifikası',

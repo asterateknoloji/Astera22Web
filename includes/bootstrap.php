@@ -9,6 +9,7 @@ require_once __DIR__ . '/ssh.php';
 require_once __DIR__ . '/ami.php';
 require_once __DIR__ . '/tenant.php';
 require_once __DIR__ . '/destinations.php';
+require_once __DIR__ . '/contexts.php';
 require_once __DIR__ . '/url_trigger.php';
 require_once __DIR__ . '/generator.php';
 require_once __DIR__ . '/crm.php';
