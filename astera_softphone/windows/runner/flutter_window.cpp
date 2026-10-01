@@ -2,6 +2,7 @@
 
 #include <flutter/standard_method_codec.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -763,6 +764,25 @@ bool FlutterWindow::OnCreate() {
       [this](const auto& call, auto result) {
         if (call.method_name() == "bringToFront") {
           BringWindowToForeground(GetHandle());
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "openExternalUrl") {
+          const auto* url = std::get_if<std::string>(call.arguments());
+          if (!url ||
+              (url->rfind("https://", 0) != 0 &&
+               url->rfind("http://", 0) != 0)) {
+            result->Error("invalid_url", "HTTP/HTTPS URL gerekli.");
+            return;
+          }
+          const auto wide_url = Utf16FromUtf8(*url);
+          const auto launch_result = reinterpret_cast<INT_PTR>(
+              ShellExecuteW(GetHandle(), L"open", wide_url.c_str(), nullptr,
+                            nullptr, SW_SHOWNORMAL));
+          if (launch_result <= 32) {
+            result->Error("open_failed", "CRM adresi açılamadı.");
+            return;
+          }
           result->Success();
           return;
         }

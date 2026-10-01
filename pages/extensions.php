@@ -32,6 +32,7 @@ foreach (departments() as $department) {
                 <th>SIP kullanıcı</th>
                 <th>Auth kullanıcı</th>
                 <th>WebRTC</th>
+                <th>CRM</th>
                 <th>Kayıt</th>
                 <th>Durum</th>
                 <th></th>
@@ -55,6 +56,14 @@ foreach (departments() as $department) {
                 <?php else: ?>
                     <span class="pill dim">kapalı</span>
                 <?php endif; ?></td>
+                <?php $crmTrigger = (string) ($row['crm_trigger'] ?? 'inherit'); ?>
+                <td><span class="pill <?= $crmTrigger === 'enabled' ? 'ok' : 'dim' ?>">
+                    <?= e([
+                        'enabled' => 'açık',
+                        'disabled' => 'kapalı',
+                        'inherit' => 'firma',
+                    ][$crmTrigger] ?? 'firma') ?>
+                </span></td>
                 <?php
                 $extensionDept = $departmentIndex[(string) ($row['dept'] ?? '')] ?? [];
                 $recordEnabled = array_key_exists('record', $row)
@@ -70,7 +79,7 @@ foreach (departments() as $department) {
             </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-            <tr><td colspan="<?= $showDept ? 10 : 9 ?>" class="muted">Bu kapsamda abone yok.</td></tr>
+            <tr><td colspan="<?= $showDept ? 11 : 10 ?>" class="muted">Bu kapsamda abone yok.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>

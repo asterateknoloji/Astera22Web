@@ -7,10 +7,19 @@ $action = (string) ($_POST['action'] ?? '');
 $webphoneCrmAccess = false;
 if (empty($_SESSION['user']) && str_starts_with($action, 'crm_')) {
     $webphoneId = (string) ($_SESSION['webphone_extension_id'] ?? '');
-    $webphoneExtension = $webphoneId !== '' ? find_by('extensions', 'id', $webphoneId) : null;
-    if ($webphoneExtension && !empty($webphoneExtension['webrtc'])) {
+    $softphoneId = (string) ($_SESSION['softphone_crm_extension_id'] ?? '');
+    $webphoneExtension = $webphoneId !== ''
+        ? find_by('extensions', 'id', $webphoneId)
+        : ($softphoneId !== '' ? find_by('extensions', 'id', $softphoneId) : null);
+    $softphoneAccess = $webphoneId === ''
+        && softphone_crm_extension_allowed($webphoneExtension);
+    if (
+        $webphoneExtension
+        && (!empty($webphoneExtension['webrtc']) || $softphoneAccess)
+    ) {
         $_SESSION['user_dept'] = (string) ($webphoneExtension['dept'] ?? '');
-        $_SESSION['username'] = 'WebPhone ' . (string) ($webphoneExtension['exten'] ?? '');
+        $_SESSION['username'] = ($softphoneAccess ? 'Softphone ' : 'WebPhone ')
+            . (string) ($webphoneExtension['exten'] ?? '');
         $webphoneCrmAccess = $_SESSION['user_dept'] !== '';
     }
 }
@@ -92,6 +101,7 @@ try {
                 'trigger' => $trigger,
                 'mode' => $mode,
                 'number_format' => $numberFormat,
+                'min_digits' => max(1, min(32, (int) ($_POST['min_digits'] ?? 7))),
                 'enabled' => !empty($_POST['enabled']),
                 'updated_at' => date(DATE_ATOM),
                 'updated_by' => store_actor(),
@@ -329,6 +339,10 @@ try {
             if ($fallbackType !== 'hangup' && !dest_belongs_to_dept($dept, $fallbackType, $fallbackDest)) {
                 json_out(['ok' => false, 'error' => 'Yönlendirme hedefi bu firmaya ait değil']);
             }
+            $crmTrigger = (string) ($_POST['crm_trigger'] ?? 'inherit');
+            if (!in_array($crmTrigger, ['inherit', 'enabled', 'disabled'], true)) {
+                $crmTrigger = 'inherit';
+            }
             store_upsert('extensions', [
                 'id' => $id,
                 'dept' => $dept,
@@ -355,6 +369,7 @@ try {
                 'transport' => ($_POST['transport'] ?? 'udp') === 'tcp' ? 'tcp' : 'udp',
                 'qualify' => max(0, (int) ($_POST['qualify'] ?? 0)),
                 'webrtc' => !empty($_POST['webrtc']),
+                'crm_trigger' => $crmTrigger,
             ], 'id');
             json_out(array_merge(['ok' => true, 'sipuser' => $sip], apply_to_pbx()));
 

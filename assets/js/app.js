@@ -415,6 +415,13 @@ const Astera = {
                     <div class="extension-section-title">Bağlantı ve cihaz</div>
                     <fieldset class="fieldset"><legend>WebRTC</legend>
                         <label><input type="checkbox" name="webrtc" ${row.webrtc ? 'checked' : ''}> Tarayıcı telefonu (WSS / WS)</label>
+                        <label>CRM otomatik açma
+                            <select name="crm_trigger">
+                                <option value="inherit" ${(row.crm_trigger || 'inherit') === 'inherit' ? 'selected' : ''}>Firma ayarını kullan</option>
+                                <option value="enabled" ${row.crm_trigger === 'enabled' ? 'selected' : ''}>Açık</option>
+                                <option value="disabled" ${row.crm_trigger === 'disabled' ? 'selected' : ''}>Kapalı</option>
+                            </select>
+                        </label>
                         <p class="muted">Açıkken bu abone tarayıcıdan kaydolur. Klasik UDP softphone aynı abonede genelde çalışmaz; ayrı dahili kullanın. Opus otomatik eklenir.</p>
                     </fieldset>
                     <fieldset class="fieldset"><legend>SIP</legend>

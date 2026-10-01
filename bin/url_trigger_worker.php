@@ -19,9 +19,17 @@ $fired = [];
 while (true) {
     $configs = array_values(array_filter(
         store_read('url_triggers'),
-        static fn($row) => !empty($row['enabled'])
-            && in_array((string) ($row['mode'] ?? 'both'), ['server', 'both'], true)
+        static fn($row) =>
+            in_array((string) ($row['mode'] ?? 'both'), ['server', 'both'], true)
     ));
+    $extensionsByDeptSip = [];
+    foreach (store_read('extensions') as $extensionRow) {
+        $extensionDept = (string) ($extensionRow['dept'] ?? '');
+        $extensionSip = sip_user($extensionRow);
+        if ($extensionDept !== '' && $extensionSip !== '') {
+            $extensionsByDeptSip[$extensionDept][$extensionSip] = $extensionRow;
+        }
+    }
     $activeDepartments = [];
     foreach ($configs as $config) {
         $dept = (string) ($config['dept'] ?? '');
@@ -39,12 +47,19 @@ while (true) {
             continue;
         }
         foreach ($current as $sip => $row) {
+            $extensionConfig = $extensionsByDeptSip[$dept][$sip] ?? null;
+            if (!url_trigger_enabled_for_extension($config, $extensionConfig)) {
+                continue;
+            }
             $state = (string) ($row['state'] ?? '');
             $label = (string) ($row['label'] ?? '');
             $peer = (string) ($row['peer'] ?? '');
             $callId = (string) ($row['call_id'] ?? '');
             $extension = (string) ($row['extension'] ?? '');
             $direction = (string) ($row['direction'] ?? '');
+            if (!url_trigger_caller_allowed($peer, $config)) {
+                continue;
+            }
             $before = (array) ($previous[$dept][$sip] ?? []);
             $event = '';
 

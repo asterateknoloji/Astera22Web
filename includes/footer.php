@@ -32,6 +32,6 @@ window.ASTERA = Object.assign(window.ASTERA || {}, {
     wss: <?= json_encode(pbx_wss_url()) ?>
 });
 </script>
-<script src="assets/js/app.js?v=58"></script>
+<script src="assets/js/app.js?v=66"></script>
 </body>
 </html>

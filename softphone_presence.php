@@ -81,10 +81,28 @@ try {
         static fn (array $a, array $b): int =>
             strnatcasecmp($a['extension'], $b['extension'])
     );
+    $urlTrigger = find_by('url_triggers', 'dept', $dept);
+    $browserTrigger = null;
+    if (
+        $urlTrigger
+        && url_trigger_enabled_for_extension($urlTrigger, $extension)
+        && in_array((string) ($urlTrigger['mode'] ?? 'both'), ['browser', 'both'], true)
+    ) {
+        $browserTrigger = [
+            'url_template' => (string) ($urlTrigger['url_template'] ?? ''),
+            'trigger' => (string) ($urlTrigger['trigger'] ?? 'ring'),
+            'number_format' => (string) ($urlTrigger['number_format'] ?? 'digits'),
+            'min_digits' => max(1, min(32, (int) ($urlTrigger['min_digits'] ?? 7))),
+            'department' => $dept,
+            'extension' => (string) ($extension['exten'] ?? ''),
+            'access_token' => softphone_crm_token_create($extension),
+        ];
+    }
     $respond([
         'ok' => !empty($status['ok']),
         'source' => 'ami',
         'extensions' => $extensions,
+        'url_trigger' => $browserTrigger,
     ], !empty($status['ok']) ? 200 : 503);
 } catch (Throwable) {
     $respond(

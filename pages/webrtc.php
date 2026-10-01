@@ -217,5 +217,5 @@ window.ASTERA.extIndex = <?= json_encode(array_map(static fn($r) => [
 ], $contacts), JSON_UNESCAPED_UNICODE) ?>;
 </script>
 <script src="assets/js/jssip.min.js?v=312"></script>
-<script src="assets/js/webrtc.js?v=27"></script>
+<script src="assets/js/webrtc.js?v=28"></script>
 <script>document.addEventListener('DOMContentLoaded', () => AsteraRtc.init());</script>

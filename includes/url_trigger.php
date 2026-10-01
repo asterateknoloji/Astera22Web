@@ -58,6 +58,79 @@ function url_trigger_valid_template(string $template): bool
         && trim((string) ($parts['host'] ?? '')) !== '';
 }
 
+function url_trigger_enabled_for_extension(array $config, ?array $extension): bool
+{
+    $preference = (string) ($extension['crm_trigger'] ?? 'inherit');
+    return match ($preference) {
+        'enabled' => true,
+        'disabled' => false,
+        default => !empty($config['enabled']),
+    };
+}
+
+function url_trigger_caller_allowed(string $caller, array $config): bool
+{
+    $digits = preg_replace('/\D+/', '', $caller) ?? '';
+    $minimum = max(1, min(32, (int) ($config['min_digits'] ?? 7)));
+    return strlen($digits) >= $minimum;
+}
+
+function softphone_crm_token_create(array $extension, int $ttlSeconds = 120): string
+{
+    $payload = json_encode([
+        'extension_id' => (string) ($extension['id'] ?? ''),
+        'expires_at' => time() + max(30, min(300, $ttlSeconds)),
+        'nonce' => bin2hex(random_bytes(8)),
+    ], JSON_UNESCAPED_SLASHES);
+    if ($payload === false || ($extension['id'] ?? '') === '') {
+        return '';
+    }
+    $encoded = rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
+    $signature = hash_hmac('sha256', 'softphone-crm|' . $encoded, AMI_SECRET, true);
+    return $encoded . '.' . rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
+}
+
+function softphone_crm_token_extension(string $token): ?array
+{
+    $parts = explode('.', trim($token), 2);
+    if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+        return null;
+    }
+    $expected = rtrim(strtr(base64_encode(
+        hash_hmac('sha256', 'softphone-crm|' . $parts[0], AMI_SECRET, true)
+    ), '+/', '-_'), '=');
+    if (!hash_equals($expected, $parts[1])) {
+        return null;
+    }
+    $decoded = base64_decode(strtr($parts[0], '-_', '+/'), true);
+    $payload = $decoded === false ? null : json_decode($decoded, true);
+    $expiresAt = (int) ($payload['expires_at'] ?? 0);
+    if (
+        !is_array($payload)
+        || $expiresAt < time()
+        || $expiresAt > time() + 300
+    ) {
+        return null;
+    }
+    $extension = find_by(
+        'extensions',
+        'id',
+        (string) ($payload['extension_id'] ?? '')
+    );
+    return softphone_crm_extension_allowed($extension) ? $extension : null;
+}
+
+function softphone_crm_extension_allowed(?array $extension): bool
+{
+    if (!$extension || empty($extension['dept'])) {
+        return false;
+    }
+    $trigger = find_by('url_triggers', 'dept', (string) $extension['dept']);
+    return $trigger
+        && url_trigger_enabled_for_extension($trigger, $extension)
+        && in_array((string) ($trigger['mode'] ?? 'both'), ['browser', 'both'], true);
+}
+
 function url_trigger_request(string $url): array
 {
     $parts = parse_url($url);

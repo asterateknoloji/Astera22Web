@@ -281,12 +281,14 @@ const AsteraRtc = {
         }
         this.crmPrevious = { ...current };
         if (!event) return;
+        const raw = String(current.peer || '');
+        const digits = raw.replace(/\D+/g, '');
+        const minimumDigits = Math.max(1, Number(config.min_digits || 7));
+        if (digits.length < minimumDigits) return;
         const eventKey = [account.sip, event, current.event_id || current.peer].join('|');
         if (this.crmSeen[eventKey]) return;
         this.crmSeen[eventKey] = true;
 
-        const raw = String(current.peer || '');
-        const digits = raw.replace(/\D+/g, '');
         let caller = config.number_format === 'raw' ? raw : digits;
         if (config.number_format === 'e164_tr') {
             caller = digits.startsWith('90')

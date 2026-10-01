@@ -33,7 +33,47 @@ class ExtensionPresence {
   }
 }
 
+class CrmUrlTrigger {
+  const CrmUrlTrigger({
+    required this.urlTemplate,
+    required this.trigger,
+    required this.numberFormat,
+    required this.minDigits,
+    required this.department,
+    required this.extension,
+    required this.accessToken,
+    required this.panelHost,
+  });
+
+  final String urlTemplate;
+  final String trigger;
+  final String numberFormat;
+  final int minDigits;
+  final String department;
+  final String extension;
+  final String accessToken;
+  final String panelHost;
+
+  factory CrmUrlTrigger.fromJson(
+    Map<String, dynamic> json, {
+    required String panelHost,
+  }) {
+    return CrmUrlTrigger(
+      urlTemplate: json['url_template'] as String? ?? '',
+      trigger: json['trigger'] as String? ?? 'ring',
+      numberFormat: json['number_format'] as String? ?? 'digits',
+      minDigits: (json['min_digits'] as num?)?.toInt() ?? 7,
+      department: json['department'] as String? ?? '',
+      extension: json['extension'] as String? ?? '',
+      accessToken: json['access_token'] as String? ?? '',
+      panelHost: panelHost,
+    );
+  }
+}
+
 class PresenceService {
+  CrmUrlTrigger? lastUrlTrigger;
+
   Future<List<ExtensionPresence>> fetch({
     required String apiUrl,
     required String sipUser,
@@ -46,15 +86,13 @@ class PresenceService {
     if (sipUser.isEmpty || password.isEmpty) {
       throw StateError('SIP kayıt bilgileri bulunamadı.');
     }
+    lastUrlTrigger = null;
     final baseUri = Uri.tryParse(apiUrl);
     if (baseUri == null || !baseUri.hasScheme) {
       throw FormatException('Meşguliyet API URL geçersiz.');
     }
     final uri = baseUri.replace(
-      queryParameters: {
-        ...baseUri.queryParameters,
-        'sip_user': sipUser,
-      },
+      queryParameters: {...baseUri.queryParameters, 'sip_user': sipUser},
     );
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
     try {
@@ -77,12 +115,14 @@ class PresenceService {
           uri: uri,
         );
       }
+      final trigger = json['url_trigger'];
+      lastUrlTrigger = trigger is Map<String, dynamic>
+          ? CrmUrlTrigger.fromJson(trigger, panelHost: baseUri.host)
+          : null;
       final extensions = json['extensions'] as List<dynamic>? ?? const [];
       return extensions
           .map(
-            (item) => ExtensionPresence.fromJson(
-              item as Map<String, dynamic>,
-            ),
+            (item) => ExtensionPresence.fromJson(item as Map<String, dynamic>),
           )
           .where((item) => item.extension.isNotEmpty)
           .toList();

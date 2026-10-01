@@ -4,6 +4,25 @@ declare(strict_types=1);
 function pbx_odbc_sql(string $sql, bool $delimited = false): array
 {
     $sql = rtrim($sql, " \t\n\r\0\x0B;") . ";\n";
+    if (PHP_OS_FAMILY !== 'Windows'
+        && is_file('/etc/asterisk/asterisk.conf')
+        && is_executable('/usr/bin/isql')) {
+        $local = tempnam(sys_get_temp_dir(), 'astera-sql-');
+        if ($local === false || file_put_contents($local, $sql) === false) {
+            return ['ok' => false, 'code' => 1, 'output' => 'Geçici SQL dosyası oluşturulamadı'];
+        }
+        $command = '/usr/bin/isql -b ' . ($delimited ? "-d'^' -c " : '')
+            . 'asterisk < ' . escapeshellarg($local) . ' 2>&1';
+        $lines = [];
+        $code = 0;
+        exec($command, $lines, $code);
+        @unlink($local);
+        return [
+            'ok' => $code === 0,
+            'code' => $code,
+            'output' => trim(implode("\n", $lines)),
+        ];
+    }
     if (strlen($sql) > 6000) {
         $local = tempnam(sys_get_temp_dir(), 'astera-sql-');
         if ($local === false || file_put_contents($local, $sql) === false) {
@@ -1132,8 +1151,20 @@ SQL);
         return $schema;
     }
 
+    $writerMigration = file_get_contents(
+        ROOT_PATH . '/migrations/010_cdr_asterisk_writer.sql'
+    );
+    if ($writerMigration === false || trim($writerMigration) === '') {
+        return ['ok' => false, 'code' => 1, 'output' => 'CDR yazıcı migration dosyası bulunamadı'];
+    }
+    $writer = pbx_pg_admin($writerMigration);
+    if (!$writer['ok']) {
+        return $writer;
+    }
+
     $config = pbx_ssh(implode("\n", [
-        "grep -q '^alias end => call_end$' /etc/asterisk/cdr_adaptive_odbc.conf || sed -i '/^table=cdr/a alias end => call_end' /etc/asterisk/cdr_adaptive_odbc.conf",
+        "sed -i -E 's/^table=.*/table=cdr_asterisk_writer/' /etc/asterisk/cdr_adaptive_odbc.conf",
+        "grep -q '^alias end => call_end$' /etc/asterisk/cdr_adaptive_odbc.conf || sed -i '/^table=/a alias end => call_end' /etc/asterisk/cdr_adaptive_odbc.conf",
         "grep -q '^queue_log => odbc,asterisk,queue_log' /etc/asterisk/extconfig.conf || sed -i '/^\\[settings\\]/a queue_log => odbc,asterisk,queue_log' /etc/asterisk/extconfig.conf",
         "grep -q '^queue_adaptive_realtime *= *yes' /etc/asterisk/logger.conf || sed -i '/^\\[general\\]/a queue_adaptive_realtime = yes' /etc/asterisk/logger.conf",
         "sed -i 's/^;queue_log_to_file *= *yes/queue_log_to_file = yes/' /etc/asterisk/logger.conf",

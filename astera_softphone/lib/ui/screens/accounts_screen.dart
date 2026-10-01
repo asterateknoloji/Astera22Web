@@ -48,6 +48,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
   Timer? _presenceTimer;
   bool _presenceOpen = false;
   bool _presenceLoading = false;
+  final Set<String> _crmTriggerSeen = {};
+  final Set<String> _crmTriggerPending = {};
 
   @override
   void initState() {
@@ -545,6 +547,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
       );
       final match = RegExp(r'sip:([^@;>]+)').firstMatch(event.remoteUri);
       final number = match?.group(1) ?? event.remoteUri;
+      unawaited(_openCrmTrigger('ring', number));
       final callerName = _callerNameFromUri(event.remoteUri, number);
       if (_incomingCallerName != callerName && mounted) {
         setState(() => _incomingCallerName = callerName);
@@ -555,10 +558,17 @@ class _AccountsScreenState extends State<AccountsScreen> {
         selection: TextSelection.collapsed(offset: number.length),
       );
       _lastDialValue = number;
+    } else if (event.state == CallState.connected &&
+        _displayedIncomingUri != null) {
+      final match = RegExp(r'sip:([^@;>]+)').firstMatch(_displayedIncomingUri!);
+      final number = match?.group(1) ?? _displayedIncomingUri!;
+      unawaited(_openCrmTrigger('answer', number));
     } else if (event.state == CallState.idle ||
         event.state == CallState.disconnected ||
         event.state == CallState.failed) {
       _displayedIncomingUri = null;
+      _crmTriggerSeen.clear();
+      _crmTriggerPending.clear();
       if (_incomingCallerName != null && mounted) {
         setState(() => _incomingCallerName = null);
       }
@@ -587,6 +597,70 @@ class _AccountsScreenState extends State<AccountsScreen> {
     final numericOnly = RegExp(r'^[\s+().-]*\d[\s+().\d-]*$').hasMatch(name);
     if (numericOnly && nameDigits == numberDigits) return null;
     return name;
+  }
+
+  Future<void> _openCrmTrigger(String event, String number) async {
+    final digits = number.replaceAll(RegExp(r'\D'), '');
+    if (digits.isEmpty) return;
+    final eventKey = '$event|$digits';
+    if (_crmTriggerSeen.contains(eventKey) ||
+        !_crmTriggerPending.add(eventKey)) {
+      return;
+    }
+
+    try {
+      await _loadPresence();
+      final config = _presenceService.lastUrlTrigger;
+      if (config == null || config.urlTemplate.isEmpty) return;
+      if (digits.length < config.minDigits) return;
+      if (config.trigger != event && config.trigger != 'both') return;
+
+      final caller = switch (config.numberFormat) {
+        'raw' => number,
+        'e164_tr' =>
+          digits.startsWith('90')
+              ? '+$digits'
+              : (digits.startsWith('0')
+                    ? '+90${digits.substring(1)}'
+                    : '+90$digits'),
+        _ => digits,
+      };
+      final replacements = {
+        '{caller}': Uri.encodeComponent(caller),
+        '{extension}': Uri.encodeComponent(config.extension),
+        '{department}': Uri.encodeComponent(config.department),
+        '{event}': Uri.encodeComponent(event),
+        '{callid}': '',
+      };
+      var url = config.urlTemplate;
+      for (final entry in replacements.entries) {
+        url = url.replaceAll(entry.key, entry.value);
+      }
+      if (!config.urlTemplate.contains('{caller}')) {
+        url += Uri.encodeComponent(caller);
+      }
+      var uri = Uri.tryParse(url);
+      if (uri == null || !['http', 'https'].contains(uri.scheme)) return;
+      if (config.accessToken.isNotEmpty &&
+          uri.host.toLowerCase() == config.panelHost.toLowerCase()) {
+        uri = uri.replace(
+          queryParameters: {
+            ...uri.queryParameters,
+            'softphone_token': config.accessToken,
+          },
+        );
+      }
+
+      await _windowChannel.invokeMethod<void>(
+        'openExternalUrl',
+        uri.toString(),
+      );
+      _crmTriggerSeen.add(eventKey);
+    } catch (error) {
+      _showError('CRM açılamadı: $error');
+    } finally {
+      _crmTriggerPending.remove(eventKey);
+    }
   }
 
   Future<void> _makeCall() async {

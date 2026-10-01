@@ -149,13 +149,14 @@ $status['recent_calls'] = webphone_recent_calls($extension, $dept);
 $urlTrigger = find_by('url_triggers', 'dept', $dept);
 if (
     $urlTrigger
-    && !empty($urlTrigger['enabled'])
+    && url_trigger_enabled_for_extension($urlTrigger, $extension)
     && in_array((string) ($urlTrigger['mode'] ?? 'both'), ['browser', 'both'], true)
 ) {
     $status['url_trigger'] = [
         'url_template' => (string) ($urlTrigger['url_template'] ?? ''),
         'trigger' => (string) ($urlTrigger['trigger'] ?? 'ring'),
         'number_format' => (string) ($urlTrigger['number_format'] ?? 'digits'),
+        'min_digits' => max(1, min(32, (int) ($urlTrigger['min_digits'] ?? 7))),
         'dept' => $dept,
     ];
 } else {

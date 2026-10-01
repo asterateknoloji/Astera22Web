@@ -27,7 +27,12 @@ SOURCE_SSH_KEY="${SOURCE_SSH_KEY:-}"
 SOURCE_APP_DIR="${SOURCE_APP_DIR:-/var/www/astera}"
 TARGET_APP_DIR="${TARGET_APP_DIR:-/var/www/astera}"
 DB_NAME="${DB_NAME:-asterisk}"
-PANEL_DOMAIN="${PANEL_DOMAIN:-santral.astera.com.tr}"
+SOURCE_PANEL_DOMAIN="${SOURCE_PANEL_DOMAIN:-santral.astera.com.tr}"
+PBX_NAME="${PBX_NAME:-}"
+PANEL_DOMAIN="${PANEL_DOMAIN:-}"
+if [[ -z "$PANEL_DOMAIN" && -n "$PBX_NAME" ]]; then
+    PANEL_DOMAIN="${PBX_NAME,,}.asterapbx.net"
+fi
 ASTERISK_SERIES="${ASTERISK_SERIES:-22}"
 ASTERISK_BUILD_JOBS="${ASTERISK_BUILD_JOBS:-2}"
 ACTIVATE=0
@@ -54,15 +59,21 @@ Istege bagli ortam degiskenleri:
   SOURCE_SSH_KEY=/root/.ssh/id_ed25519
   SOURCE_SSH_PASSWORD='...'        (anahtar yoksa; komut satirina yazmayin)
   SOURCE_APP_DIR=/var/www/astera
-  PANEL_DOMAIN=santral.example.com
+  SOURCE_PANEL_DOMAIN=santral.astera.com.tr
+  PBX_NAME=pbx002                   (pbx002.asterapbx.net oluşturur)
+  PANEL_DOMAIN=pbx002.example.com   (PBX_NAME yerine kullanılabilir)
+  LETSENCRYPT_EMAIL=admin@example.com
+  CLOUDFLARE_API_TOKEN='...'        (komut geçmişine yazmak yerine export edin)
   SOURCE_HOST=192.168.181.74 TARGET_HOST=192.168.181.87
 
 Onerilen guvenli ilk calisma:
-  sudo SOURCE_SSH_KEY=/root/.ssh/id_ed25519 bash install_new_pbx.sh
+  sudo PBX_NAME=pbx002 SOURCE_SSH_KEY=/root/.ssh/id_ed25519 \
+    bash install_new_pbx.sh
 
 Kesin gecis sirasinda:
   1. Eski santralde yeni cagri olusmasini durdurun.
-  2. Betigi --force --activate ile yeniden calistirarak son veriyi alin.
+  2. Betigi --force --activate ile yeniden calistirin. SSL, WebRTC ve root SSH
+     ayarlari bu adimda otomatik tamamlanir.
   3. Operator/DNS/NAT yonunu yeni IP'ye cevirin.
 USAGE
 }
@@ -125,6 +136,10 @@ valid_ipv4 "$SOURCE_HOST" || die "Gecersiz kaynak IP: $SOURCE_HOST"
 valid_ipv4 "$TARGET_HOST" || die "Gecersiz hedef IP: $TARGET_HOST"
 [[ "$SOURCE_HOST" != "$TARGET_HOST" ]] || die "Kaynak ve hedef IP ayni olamaz."
 [[ "$DB_NAME" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "Gecersiz veritabani adi."
+[[ "$SOURCE_PANEL_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+    || die "Geçersiz SOURCE_PANEL_DOMAIN."
+[[ "$PANEL_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+    || die "PBX_NAME veya geçerli PANEL_DOMAIN zorunludur."
 [[ "$SOURCE_APP_DIR" == /* && "$TARGET_APP_DIR" == /* ]] || die "Uygulama yollari mutlak olmalidir."
 [[ "$ASTERISK_BUILD_JOBS" =~ ^[1-8]$ ]] \
     || die "ASTERISK_BUILD_JOBS 1 ile 8 arasinda olmalidir."
@@ -529,6 +544,32 @@ GRANT SELECT ON astera_tenants, pbx_config_entities, pbx_config_values,
 GRANT UPDATE (last_used_at, updated_at) ON softphone_crm_tokens TO "astera-panel";
 SQL
 
+if [[ "$SOURCE_PANEL_DOMAIN" != "$PANEL_DOMAIN" ]]; then
+    log "Kopyalanan URL tetikleyicileri yeni panel alan adına taşınıyor"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<SQL
+UPDATE pbx_config_values AS value
+SET text_value = replace(
+        replace(
+            value.text_value,
+            'https://$SOURCE_PANEL_DOMAIN/',
+            'https://$PANEL_DOMAIN/'
+        ),
+        'http://$SOURCE_PANEL_DOMAIN/',
+        'https://$PANEL_DOMAIN/'
+    ),
+    updated_at = now()
+FROM pbx_config_entities AS entity
+WHERE entity.entity_id = value.entity_id
+  AND entity.dept_id = value.dept_id
+  AND entity.store_name = 'url_triggers'
+  AND value.field_name = 'url_template'
+  AND (
+      value.text_value LIKE 'https://$SOURCE_PANEL_DOMAIN/%'
+      OR value.text_value LIKE 'http://$SOURCE_PANEL_DOMAIN/%'
+  );
+SQL
+fi
+
 log "Yerel, anahtar tabanli PBX yonetim baglantisi hazirlaniyor"
 install -d -m 0750 -o astera-panel -g astera-panel /etc/astera
 if [[ ! -f /etc/astera/id_ed25519 ]]; then
@@ -551,6 +592,18 @@ ssh-keyscan -H 127.0.0.1 localhost "$TARGET_HOST" 2>/dev/null \
 chown astera-panel:astera-panel /etc/astera/id_ed25519 /etc/astera/id_ed25519.pub \
     /etc/astera/known_hosts
 chmod 600 /etc/astera/id_ed25519 /etc/astera/known_hosts
+cat >/etc/astera/astera.env <<ENV
+ASTERA_PBX_HOST=$TARGET_HOST
+ASTERA_PBX_SSH_HOST=127.0.0.1
+ASTERA_SSH_USER=root
+ASTERA_SSH_PASS=
+ASTERA_SSH_KEY=/etc/astera/id_ed25519
+ASTERA_SSH_KNOWN_HOSTS=/etc/astera/known_hosts
+ASTERA_PANEL_DOMAIN=$PANEL_DOMAIN
+ASTERA_DB_NAME=$DB_NAME
+ENV
+chown root:astera-panel /etc/astera/astera.env
+chmod 0640 /etc/astera/astera.env
 log "SSHD ayarlari ana kurulumda degistirilmedi; configure_root_ssh.sh ayrica calistirilmalidir"
 
 log "Dosya izinleri duzenleniyor"
@@ -772,6 +825,95 @@ if ((ACTIVATE == 1)); then
         die "Asterisk PJSIP veya HTTP modulleri yuklenmedi."
     fi
     printf '%s\n%s\n' "$PJSIP_STATUS" "$HTTP_STATUS"
+
+    log "CDR ve ODBC yazma yolu dogrulaniyor"
+    CDR_STATUS="$(asterisk -rx 'cdr show status' 2>&1 || true)"
+    ODBC_STATUS="$(asterisk -rx 'odbc show' 2>&1 || true)"
+    if ! grep -Fq 'Adaptive ODBC' <<<"$CDR_STATUS"; then
+        printf '%s\n' "$CDR_STATUS" >&2
+        die "Adaptive ODBC CDR arka ucu yuklenmedi."
+    fi
+    if ! grep -Eq 'Number of active connections:[[:space:]]+[1-9]' <<<"$ODBC_STATUS"; then
+        printf '%s\n' "$ODBC_STATUS" >&2
+        die "Asterisk PostgreSQL ODBC baglantisi etkin degil."
+    fi
+    CDR_RELKIND="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        "SELECT relkind::text FROM pg_class WHERE oid = to_regclass('public.cdr')")"
+    [[ "$CDR_RELKIND" == "p" ]] \
+        || die "CDR tablosu aylik partition yapisinda degil (relkind=$CDR_RELKIND)."
+    CDR_WRITER_KIND="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        "SELECT relkind::text FROM pg_class WHERE oid = to_regclass('public.cdr_asterisk_writer')")"
+    [[ "$CDR_WRITER_KIND" == "v" ]] \
+        || die "Asterisk CDR yazici gorunumu bulunamadi."
+    grep -Eq '^table[[:space:]]*=[[:space:]]*cdr_asterisk_writer[[:space:]]*$' \
+        /etc/asterisk/cdr_adaptive_odbc.conf \
+        || die "Asterisk CDR hedefi cdr_asterisk_writer degil."
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
+BEGIN;
+SET LOCAL ROLE asterisk;
+INSERT INTO cdr_asterisk_writer (
+    calldate, clid, src, dst, dcontext, channel, lastapp, duration,
+    billsec, disposition, amaflags, accountcode, uniqueid, linkedid
+) VALUES (
+    timezone('UTC', now()), '"Kurulum CDR Test" <999>', '999', '998',
+    'from-genel', 'PJSIP/999-install-test', 'Dial', 1,
+    0, 'NO ANSWER', 3, '', 'astera-install-cdr-test', 'astera-install-cdr-test'
+);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM cdr
+        WHERE uniqueid = 'astera-install-cdr-test'
+          AND calldate BETWEEN
+              timezone('Europe/Istanbul', now()) - interval '1 minute'
+              AND timezone('Europe/Istanbul', now()) + interval '1 minute'
+    ) THEN
+        RAISE EXCEPTION 'Asterisk CDR saat dönüşümü doğrulanamadı';
+    END IF;
+END;
+$$;
+ROLLBACK;
+SQL
+    DEFAULT_CDR_ROWS="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        'SELECT astera_cdr_default_partition_rows()')"
+    [[ "$DEFAULT_CDR_ROWS" == "0" ]] \
+        || die "Varsayilan CDR partition icinde $DEFAULT_CDR_ROWS satir bulundu."
+
+    for helper_script in \
+        configure_pbx_ssl.sh \
+        configure_webrtc.sh \
+        configure_root_ssh.sh; do
+        [[ -f "$TARGET_APP_DIR/$helper_script" ]] \
+            || die "Kurulum yardımcısı bulunamadı: $TARGET_APP_DIR/$helper_script"
+    done
+
+    log "Alan adı ve TLS sertifikası yapılandırılıyor"
+    bash "$TARGET_APP_DIR/configure_pbx_ssl.sh" "$PANEL_DOMAIN"
+
+    log "WebRTC yapılandırılıyor"
+    PANEL_DOMAIN="$PANEL_DOMAIN" APP_DIR="$TARGET_APP_DIR" \
+        bash "$TARGET_APP_DIR/configure_webrtc.sh"
+
+    log "Root SSH erişimi yapılandırılıyor"
+    bash "$TARGET_APP_DIR/configure_root_ssh.sh"
+
+    log "Panelin yerel CDR sorgusu dogrulaniyor"
+    PANEL_CDR_TOTAL="$(
+        sudo -u astera-panel env ASTERA_APP_DIR="$TARGET_APP_DIR" php -r '
+            require getenv("ASTERA_APP_DIR") . "/includes/bootstrap.php";
+            $ok = false;
+            $rows = pbx_odbc_rows("SELECT count(*) AS total FROM cdr", $ok);
+            if (!$ok || !isset($rows[0]["total"])) {
+                fwrite(STDERR, "Panel CDR sorgusu basarisiz\n");
+                exit(1);
+            }
+            echo (int) $rows[0]["total"];
+        '
+    )"
+    [[ "$PANEL_CDR_TOTAL" =~ ^[0-9]+$ ]] \
+        || die "Panel CDR toplam kaydini okuyamadi."
+    systemctl start astera-cdr-partitions.service
+    echo "CDR kayit sayisi: $PANEL_CDR_TOTAL"
 else
     systemctl disable asterisk.service 2>/dev/null || true
     systemctl stop asterisk.service 2>/dev/null || true
@@ -793,14 +935,13 @@ echo "Panel/WebPhone: https://$PANEL_DOMAIN/webphone.php"
 echo "Hedef IP ile:   https://$TARGET_HOST/webphone.php"
 echo "Hedef yedegi:   $BACKUP_DIR"
 echo "Eski IP raporu: $old_ip_report"
-echo "Root SSH ayari: sudo bash configure_root_ssh.sh"
-echo "WebRTC ayari:   sudo bash configure_webrtc.sh"
 if ((ACTIVATE == 0)); then
     echo
     echo "Asterisk guvenlik amaciyla BASLATILMADI."
     echo "Kesin geciste kaynak cagrilarini durdurduktan sonra son senkronizasyonu yapin:"
-    echo "  sudo bash $0 --force --activate"
+    echo "  sudo PANEL_DOMAIN=$PANEL_DOMAIN bash $0 --force --activate"
 else
     echo
-    echo "Asterisk calisiyor. DNS/NAT, trunk kayitlari, WSS ve test cagrisini kontrol edin."
+    echo "Asterisk, SSL, WebRTC ve root SSH ayarlari tamamlandi."
+    echo "DNS/NAT, trunk kayitlari, WSS ve test cagrisini kontrol edin."
 fi

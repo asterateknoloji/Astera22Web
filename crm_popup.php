@@ -4,15 +4,37 @@ declare(strict_types=1);
 require_once __DIR__ . '/includes/bootstrap.php';
 
 $panelAccess = !empty($_SESSION['user']);
+$softphoneAccess = false;
 $extension = null;
 if (!$panelAccess) {
+    $accessToken = trim((string) ($_GET['softphone_token'] ?? ''));
+    if ($accessToken !== '') {
+        $tokenExtension = softphone_crm_token_extension($accessToken);
+        if ($tokenExtension) {
+            $_SESSION['softphone_crm_extension_id'] = (string) $tokenExtension['id'];
+            $query = $_GET;
+            unset($query['softphone_token']);
+            redirect('crm_popup.php' . ($query ? '?' . http_build_query($query) : ''));
+        }
+    }
     $webphoneId = (string) ($_SESSION['webphone_extension_id'] ?? '');
-    $extension = $webphoneId !== '' ? find_by('extensions', 'id', $webphoneId) : null;
-    if (!$extension || empty($extension['webrtc']) || empty($extension['dept'])) {
+    $softphoneId = (string) ($_SESSION['softphone_crm_extension_id'] ?? '');
+    $extension = $webphoneId !== ''
+        ? find_by('extensions', 'id', $webphoneId)
+        : ($softphoneId !== '' ? find_by('extensions', 'id', $softphoneId) : null);
+    $softphoneAccess = $webphoneId === ''
+        && softphone_crm_extension_allowed($extension);
+    $webphoneAccess = $webphoneId !== ''
+        && $extension
+        && !empty($extension['webrtc'])
+        && !empty($extension['dept']);
+    if (!$webphoneAccess && !$softphoneAccess) {
+        unset($_SESSION['softphone_crm_extension_id']);
         redirect('webphone.php');
     }
     $_SESSION['user_dept'] = (string) $extension['dept'];
-    $_SESSION['username'] = 'WebPhone ' . (string) ($extension['exten'] ?? '');
+    $_SESSION['username'] = ($softphoneAccess ? 'Softphone ' : 'WebPhone ')
+        . (string) ($extension['exten'] ?? '');
 }
 
 if (!$panelAccess && $extension && empty($_GET['callid'])) {
@@ -46,9 +68,17 @@ header('Referrer-Policy: same-origin');
     </div>
     <nav class="crm-popup-nav">
         <a class="btn crm-nav-primary" href="crm_popup.php">Müşteri Kartları</a>
-        <a class="btn crm-nav-back" href="<?= $panelAccess ? 'index.php?p=crm' : 'webphone.php' ?>">
-            <?= $panelAccess ? 'Panele dön' : 'WebPhone’a dön' ?>
-        </a>
+        <?php if ($panelAccess): ?>
+            <a class="btn crm-nav-back" href="index.php?p=crm">Panele dön</a>
+        <?php elseif ($softphoneAccess): ?>
+            <a class="btn crm-nav-back" href="#"
+               onclick="window.close(); return false;">Pencereyi kapat</a>
+        <?php else: ?>
+            <a class="btn crm-nav-back" href="webphone.php"
+               onclick="if (window.opener && !window.opener.closed) { window.opener.focus(); window.close(); return false; }">
+                WebPhone’a dön
+            </a>
+        <?php endif; ?>
     </nav>
 </header>
 <main class="crm-popup-main">
