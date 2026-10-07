@@ -900,11 +900,17 @@ sudo -u postgres psql -d "$DB_NAME" -Atqc \
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
     "https://$PANEL_DOMAIN/webphone.php" >/dev/null
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
-    "https://$PANEL_DOMAIN/Agent/login.php" | grep -Fq 'name="phone_mode"'
+    "https://$PANEL_DOMAIN/Agent/login.php" \
+    -o "$WORK_DIR/agent-login-check.html"
+grep -Fq 'name="phone_mode"' "$WORK_DIR/agent-login-check.html"
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
-    "https://$PANEL_DOMAIN/Supervisor/login.php" | grep -Fq 'Supervisor Girişi'
+    "https://$PANEL_DOMAIN/Supervisor/login.php" \
+    -o "$WORK_DIR/supervisor-login-check.html"
+grep -Fq 'Supervisor Girişi' "$WORK_DIR/supervisor-login-check.html"
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
-    "https://$PANEL_DOMAIN/assets/js/app.js" | grep -Fq 'pageExtensions()'
+    "https://$PANEL_DOMAIN/assets/js/app.js" \
+    -o "$WORK_DIR/app-js-check.js"
+grep -Fq 'pageExtensions()' "$WORK_DIR/app-js-check.js"
 
 old_ip_report="$STATE_DIR/source-ip-references.txt"
 grep -RIn --exclude='*.log' --exclude='source-ip-references.txt' \
