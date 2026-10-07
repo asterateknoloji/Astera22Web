@@ -162,6 +162,14 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 log "Temel paketler kuruluyor"
 apt-get update
+apt-get install -y --no-install-recommends ca-certificates curl gnupg
+install -d -m 0755 /usr/share/postgresql-common/pgdg
+curl -fL --retry 3 \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
+    "${VERSION_CODENAME}" >/etc/apt/sources.list.d/pgdg.list
+apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates curl wget gnupg lsb-release openssl rsync openssh-client sshpass \
     build-essential pkg-config git subversion \
@@ -170,7 +178,7 @@ apt-get install -y --no-install-recommends \
     libspeex-dev libspeexdsp-dev libogg-dev libvorbis-dev libgsm1-dev \
     libopus-dev libsrtp2-dev libspandsp-dev libical-dev libneon27-dev \
     unixodbc unixodbc-dev odbc-postgresql libpq-dev \
-    postgresql postgresql-contrib \
+    postgresql-16 postgresql-client-16 \
     nginx certbot python3-certbot-nginx \
     php-fpm php-cli php-pgsql php-mbstring php-curl php-xml php-zip php-intl php-gd
 
@@ -507,7 +515,15 @@ chgrp postgres "$WORK_DIR" "$WORK_DIR/roles.sql" "$WORK_DIR/database.dump"
 chmod 0750 "$WORK_DIR"
 chmod 0640 "$WORK_DIR/roles.sql" "$WORK_DIR/database.dump"
 
+log "Sistem ve PostgreSQL saat dilimi Europe/Istanbul olarak ayarlaniyor"
+timedatectl set-timezone Europe/Istanbul
 systemctl enable --now postgresql
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres \
+    -c "ALTER SYSTEM SET timezone = 'Europe/Istanbul';"
+systemctl restart postgresql
+[[ "$(sudo -u postgres psql -d postgres -Atqc 'SHOW timezone')" == "Europe/Istanbul" ]] \
+    || die "PostgreSQL saat dilimi Europe/Istanbul olarak ayarlanamadi."
+
 if sudo -u postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='$(printf '%s' "$DB_NAME" | sed "s/'/''/g")'" | grep -qx 1; then
     existing_tables="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
         "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")"
@@ -530,6 +546,30 @@ fi
 sudo -u postgres createdb --owner=asterisk "$DB_NAME"
 sudo -u postgres pg_restore --exit-on-error --no-owner --no-acl \
     --dbname="$DB_NAME" "$WORK_DIR/database.dump"
+PRI_MIGRATION="$TARGET_APP_DIR/migrations/011_pri_spans.sql"
+[[ -s "$PRI_MIGRATION" ]] || die "PRI migration dosyasi bulunamadi: $PRI_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PRI_MIGRATION"
+CALLCENTER_MIGRATION="$TARGET_APP_DIR/migrations/012_callcenter_core.sql"
+[[ -s "$CALLCENTER_MIGRATION" ]] \
+    || die "Callcenter migration dosyasi bulunamadi: $CALLCENTER_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$CALLCENTER_MIGRATION"
+CALLCENTER_ADMIN_MIGRATION="$TARGET_APP_DIR/migrations/013_callcenter_default_admin.sql"
+[[ -s "$CALLCENTER_ADMIN_MIGRATION" ]] \
+    || die "Callcenter admin migration dosyasi bulunamadi: $CALLCENTER_ADMIN_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$CALLCENTER_ADMIN_MIGRATION"
+for migration in \
+    014_callcenter_permissions.sql \
+    015_callcenter_audit_logs.sql \
+    016_agent_detail_recording_permissions.sql \
+    017_callcenter_surveys.sql \
+    018_callcenter_system_settings.sql \
+    019_callcenter_legacy_survey_import.sql \
+    020_callcenter_survey_call_unique.sql \
+    021_callcenter_agent_phone_mode.sql; do
+    migration_path="$TARGET_APP_DIR/migrations/$migration"
+    [[ -s "$migration_path" ]] || die "Migration dosyasi bulunamadi: $migration_path"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$migration_path"
+done
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<SQL
 GRANT CONNECT ON DATABASE "$DB_NAME" TO asterisk;
 GRANT USAGE ON SCHEMA public TO asterisk;
@@ -539,10 +579,66 @@ GRANT CONNECT ON DATABASE "$DB_NAME" TO "astera-panel";
 GRANT USAGE ON SCHEMA public TO "astera-panel";
 GRANT SELECT ON astera_tenants, pbx_config_entities, pbx_config_values,
     crm_customers, crm_customer_phones, softphone_crm_tokens,
-    pbx_custom_contexts, pbx_custom_context_steps
+    pbx_custom_contexts, pbx_custom_context_steps,
+    cdr, queue_log,
+    callcenter_agents, callcenter_agent_queue_assignments, callcenter_break_types,
+    callcenter_breaks, callcenter_agent_sessions, callcenter_supervisor_users,
+    callcenter_supervisor_queue_scopes, callcenter_supervisor_tenant_scopes
     TO "astera-panel";
+GRANT INSERT, UPDATE, DELETE ON callcenter_agents, callcenter_agent_queue_assignments,
+    callcenter_break_types, callcenter_breaks, callcenter_agent_sessions,
+    callcenter_supervisor_users, callcenter_supervisor_queue_scopes,
+    callcenter_supervisor_tenant_scopes TO "astera-panel";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "astera-panel";
 GRANT UPDATE (last_used_at, updated_at) ON softphone_crm_tokens TO "astera-panel";
 SQL
+
+log "CDR yazici gorunumu ve Asterisk ODBC hedefi hazirlaniyor"
+CDR_WRITER_MIGRATION="$TARGET_APP_DIR/migrations/010_cdr_asterisk_writer.sql"
+CDR_ADAPTIVE_CONF="/etc/asterisk/cdr_adaptive_odbc.conf"
+[[ -s "$CDR_WRITER_MIGRATION" ]] \
+    || die "CDR yazici migration dosyasi bulunamadi: $CDR_WRITER_MIGRATION"
+[[ -f "$CDR_ADAPTIVE_CONF" ]] \
+    || die "Asterisk Adaptive ODBC yapilandirmasi bulunamadi: $CDR_ADAPTIVE_CONF"
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    <"$CDR_WRITER_MIGRATION"
+
+python3 - "$CDR_ADAPTIVE_CONF" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+section = next(
+    (index for index, line in enumerate(lines) if re.match(r"^\s*\[[^]]+\]\s*$", line)),
+    None,
+)
+if section is None:
+    raise SystemExit("Adaptive ODBC yapilandirmasinda baglanti bolumu bulunamadi")
+
+table_indexes = [
+    index for index, line in enumerate(lines)
+    if re.match(r"^\s*table\s*=", line)
+]
+if table_indexes:
+    lines[table_indexes[0]] = "table=cdr_asterisk_writer"
+    for index in reversed(table_indexes[1:]):
+        del lines[index]
+    table_index = table_indexes[0]
+else:
+    table_index = section + 1
+    lines.insert(table_index, "table=cdr_asterisk_writer")
+
+alias_pattern = re.compile(r"^\s*alias\s+end\s*=>\s*call_end\s*$")
+if not any(alias_pattern.match(line) for line in lines):
+    lines.insert(table_index + 1, "alias end => call_end")
+
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+chown asterisk:asterisk "$CDR_ADAPTIVE_CONF"
+chmod 0640 "$CDR_ADAPTIVE_CONF"
 
 if [[ "$SOURCE_PANEL_DOMAIN" != "$PANEL_DOMAIN" ]]; then
     log "Kopyalanan URL tetikleyicileri yeni panel alan adına taşınıyor"
@@ -727,7 +823,7 @@ log "Yardimci systemd servisleri kuruluyor"
 cat >/etc/systemd/system/asterisk.service <<'SYSTEMD'
 [Unit]
 Description=Astera Asterisk PBX
-After=network-online.target postgresql.service
+After=network-online.target postgresql.service dahdi.service
 Wants=network-online.target
 
 [Service]
@@ -779,9 +875,36 @@ fi
 log "Kurulum dogrulaniyor"
 php -l "$TARGET_APP_DIR/webphone.php"
 php -l "$TARGET_APP_DIR/api.php"
+php -l "$TARGET_APP_DIR/Agent/login.php"
+php -l "$TARGET_APP_DIR/Agent/agent_dashboard_v2.php"
+php -l "$TARGET_APP_DIR/Supervisor/fop_abone.php"
+php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/agentdetay.php"
+php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/anket.php"
 sudo -u postgres psql -d "$DB_NAME" -Atqc 'SELECT current_database()' | grep -Fxq "$DB_NAME"
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT version FROM astera_schema_migrations WHERE version='021_callcenter_agent_phone_mode'" \
+    | grep -Fxq '021_callcenter_agent_phone_mode'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='callcenter_agent_sessions'
+       AND column_name='phone_mode'" \
+    | grep -Fxq 'phone_mode'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT count(*) FROM information_schema.tables
+     WHERE table_schema='public' AND table_name IN (
+       'callcenter_surveys','callcenter_survey_categories','callcenter_survey_questions',
+       'callcenter_survey_evaluations','callcenter_survey_answers',
+       'callcenter_settings','callcenter_queue_settings',
+       'callcenter_queue_notification_recipients','callcenter_audit_logs'
+     )" | grep -Fxq '9'
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
     "https://$PANEL_DOMAIN/webphone.php" >/dev/null
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/Agent/login.php" | grep -Fq 'name="phone_mode"'
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/Supervisor/login.php" | grep -Fq 'Supervisor Girişi'
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/assets/js/app.js" | grep -Fq 'pageExtensions()'
 
 old_ip_report="$STATE_DIR/source-ip-references.txt"
 grep -RIn --exclude='*.log' --exclude='source-ip-references.txt' \
