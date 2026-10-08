@@ -114,17 +114,31 @@ function store_upsert(string $name, array $item, string $key): array
 {
     $rows = store_read($name);
     $found = false;
+    $position = count($rows);
     foreach ($rows as $i => $row) {
         if ((string) ($row[$key] ?? '') === (string) $item[$key]) {
             $rows[$i] = array_merge($row, $item);
             $found = true;
+            $position = $i;
             break;
         }
     }
     if (!$found) {
         $rows[] = $item;
     }
-    store_write($name, array_values($rows));
+    $rows = array_values($rows);
+    if (
+        $name !== 'departments'
+        && function_exists('pbx_relational_enabled')
+        && pbx_relational_enabled()
+        && pbx_relational_supports($name)
+    ) {
+        pbx_relational_upsert_row($name, $rows[$position], $position);
+        store_local_write($name, $rows);
+        @unlink(DATA_PATH . DIRECTORY_SEPARATOR . '.database-write-pending');
+    } else {
+        store_write($name, $rows);
+    }
     return $rows;
 }
 

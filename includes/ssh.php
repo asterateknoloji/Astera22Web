@@ -125,7 +125,7 @@ function pbx_openssh_prefix(): string
     return '';
 }
 
-function pbx_apply_files(array $files): array
+function pbx_apply_files(array $files, array $beforeReload = []): array
 {
     $log = [];
     $hashCommands = [];
@@ -160,9 +160,9 @@ function pbx_apply_files(array $files): array
         return ['ok' => true, 'output' => trim(implode("\n", $log))];
     }
 
-    $commands = [
+    $commands = array_merge($beforeReload, [
         'chown asterisk:asterisk /etc/asterisk/pjsip.conf /etc/asterisk/pjsip_endpoints.conf /etc/asterisk/pjsip_trunks.conf /etc/asterisk/extensions.conf /etc/asterisk/queues_web.conf /etc/asterisk/voicemail_web.conf /etc/asterisk/confbridge_web.conf /etc/asterisk/res_parking_web.conf /etc/asterisk/musiconhold_web.conf /etc/asterisk/features_web.conf /etc/asterisk/http.conf 2>/dev/null || true',
-    ];
+    ]);
     if (array_intersect($changed, ['extensions.conf'])) {
         $commands[] = "asterisk -rx 'dialplan reload'";
     }

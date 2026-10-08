@@ -74,12 +74,11 @@ function apply_to_pbx(bool $force = false): array
         'test -f /root/asterisk-web-backup/http.conf || cp /etc/asterisk/http.conf /root/asterisk-web-backup/http.conf',
         'if [ ! -f /etc/asterisk/keys/asterisk.crt ]; then openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout /etc/asterisk/keys/asterisk.key -out /etc/asterisk/keys/asterisk.crt -subj "/CN=' . PBX_HOST . '"; cat /etc/asterisk/keys/asterisk.crt /etc/asterisk/keys/asterisk.key > /etc/asterisk/keys/asterisk.pem; chown asterisk:asterisk /etc/asterisk/keys/asterisk.crt /etc/asterisk/keys/asterisk.key /etc/asterisk/keys/asterisk.pem; chmod 640 /etc/asterisk/keys/asterisk.key /etc/asterisk/keys/asterisk.pem; fi',
         "grep -q '^icesupport' /etc/asterisk/rtp.conf || echo 'icesupport=yes' >> /etc/asterisk/rtp.conf",
-        'mkdir -p /var/lib/asterisk/sounds/custom',
-        'chown -R asterisk:asterisk /var/lib/asterisk/sounds/custom',
+        'install -d -o asterisk -g asterisk /var/lib/asterisk/sounds/custom',
     ];
     if ($dirs) {
-        $prep[] = 'mkdir -p ' . implode(' ', $dirs);
-        $prep[] = 'chown -R asterisk:asterisk /var/spool/asterisk/monitor';
+        $prep[] = 'install -d -o asterisk -g asterisk '
+            . implode(' ', $dirs);
     }
     $mohDirs = [];
     $soundDirs = [];
@@ -91,15 +90,15 @@ function apply_to_pbx(bool $force = false): array
         }
     }
     if ($mohDirs) {
-        $prep[] = 'mkdir -p ' . implode(' ', $mohDirs);
-        $prep[] = 'chown -R asterisk:asterisk /var/lib/asterisk/moh';
+        $prep[] = 'install -d -o asterisk -g asterisk '
+            . implode(' ', $mohDirs);
     }
     if ($soundDirs) {
-        $prep[] = 'mkdir -p ' . implode(' ', $soundDirs);
-        $prep[] = 'chown -R asterisk:asterisk /var/lib/asterisk/sounds/custom';
+        $prep[] = 'install -d -o asterisk -g asterisk '
+            . implode(' ', $soundDirs);
     }
-    $inc = pbx_ssh(implode("\n", $prep));
-    $apply = pbx_apply_files($paths);
+    $prep[] = "ss -lnt | grep -q ':8088' || systemctl restart asterisk";
+    $apply = pbx_apply_files($paths, $prep);
     if (preg_match('/^pjsip(?:_endpoints|_trunks)?\.conf: yüklendi$/m', (string) ($apply['output'] ?? ''))) {
         $enabledRegistrations = [];
         foreach (store_read('trunks') as $trunk) {
@@ -133,20 +132,27 @@ function apply_to_pbx(bool $force = false): array
             $apply['output'] = trim($apply['output'] . "\nTrunk kayıtları yenilendi.\n" . $registrationStatus);
         }
     }
-    $bl = ["asterisk -rx 'database deltree BL'"];
+    $databaseOperations = [
+        ['action' => 'delete_tree', 'family' => 'BL'],
+    ];
+    $databaseFallback = ["asterisk -rx 'database deltree BL'"];
     foreach (store_read('blacklist') as $row) {
         $bcode = dept_code_of((string) ($row['dept'] ?? ''));
         $num = preg_replace('/\D+/', '', (string) ($row['number'] ?? '')) ?? '';
         if ($bcode !== '' && $num !== '') {
-            $bl[] = "asterisk -rx 'database put BL {$bcode}/{$num} 1'";
+            $databaseOperations[] = [
+                'action' => 'put',
+                'family' => 'BL',
+                'key' => "{$bcode}/{$num}",
+                'value' => '1',
+            ];
+            $databaseFallback[] = "asterisk -rx 'database put BL {$bcode}/{$num} 1'";
         }
     }
-    $sync = pbx_ssh(implode("\n", $bl));
-    $apply['output'] = trim($apply['output'] . "\n" . $sync['output']);
-    $recordingPrefs = [
-        "asterisk -rx 'database deltree REC'",
-        "asterisk -rx 'database deltree RECFMT'",
-    ];
+    $databaseOperations[] = ['action' => 'delete_tree', 'family' => 'REC'];
+    $databaseOperations[] = ['action' => 'delete_tree', 'family' => 'RECFMT'];
+    $databaseFallback[] = "asterisk -rx 'database deltree REC'";
+    $databaseFallback[] = "asterisk -rx 'database deltree RECFMT'";
     foreach (store_read('extensions') as $extension) {
         $deptId = (string) ($extension['dept'] ?? '');
         $exten = ast_sanitize_id((string) ($extension['exten'] ?? ''));
@@ -162,31 +168,31 @@ function apply_to_pbx(bool $force = false): array
             $format = 'wav';
         }
         $code = dept_code_of($deptId);
-        $recordingPrefs[] = "asterisk -rx 'database put REC/{$code} {$exten} " . ($enabled ? '1' : '0') . "'";
-        $recordingPrefs[] = "asterisk -rx 'database put RECFMT/{$code} {$exten} {$format}'";
+        $databaseOperations[] = [
+            'action' => 'put',
+            'family' => "REC/{$code}",
+            'key' => $exten,
+            'value' => $enabled ? '1' : '0',
+        ];
+        $databaseOperations[] = [
+            'action' => 'put',
+            'family' => "RECFMT/{$code}",
+            'key' => $exten,
+            'value' => $format,
+        ];
+        $databaseFallback[] = "asterisk -rx 'database put REC/{$code} {$exten} "
+            . ($enabled ? '1' : '0') . "'";
+        $databaseFallback[] = "asterisk -rx 'database put RECFMT/{$code} {$exten} {$format}'";
     }
-    $recordingSync = pbx_ssh(implode("\n", $recordingPrefs));
-    if (trim((string) ($recordingSync['output'] ?? '')) !== '') {
-        $apply['output'] = trim($apply['output'] . "\n" . $recordingSync['output']);
+    $databaseSync = pbx_ami_database_apply($databaseOperations);
+    if (empty($databaseSync['ok'])) {
+        $databaseSync = pbx_ssh(implode("\n", $databaseFallback));
     }
-    $crmCallerIdSync = crm_sync_all_caller_id_cache();
-    if (trim((string) ($crmCallerIdSync['output'] ?? '')) !== '') {
-        $apply['output'] = trim($apply['output'] . "\n" . $crmCallerIdSync['output']);
+    if (trim((string) ($databaseSync['output'] ?? '')) !== '') {
+        $apply['output'] = trim($apply['output'] . "\n" . $databaseSync['output']);
     }
-    if (empty($crmCallerIdSync['ok'])) {
+    if (empty($databaseSync['ok'])) {
         $apply['ok'] = false;
-    }
-    $apply['output'] = trim($inc['output'] . "\n" . $apply['output']);
-    $http = pbx_ssh("ss -lnt | grep -q ':8088' || systemctl restart asterisk");
-    if (trim($http['output']) !== '') {
-        $apply['output'] = trim($apply['output'] . "\n" . $http['output']);
-    }
-    $reporting = ensure_reporting_database();
-    if (!$reporting['ok']) {
-        $apply['ok'] = false;
-    }
-    if (trim((string) ($reporting['output'] ?? '')) !== '') {
-        $apply['output'] = trim($apply['output'] . "\n" . $reporting['output']);
     }
     if (!empty($apply['ok'])) {
         store_clear_pending();

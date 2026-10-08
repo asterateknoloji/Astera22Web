@@ -480,6 +480,100 @@ function pbx_ami_core_channels(): array
     return $events;
 }
 
+function pbx_ami_database_apply(array $operations): array
+{
+    if (!$operations) {
+        return ['ok' => true, 'code' => 0, 'output' => ''];
+    }
+    $errorNumber = 0;
+    $errorMessage = '';
+    $socket = @fsockopen(PBX_HOST, AMI_PORT, $errorNumber, $errorMessage, 2);
+    if (!is_resource($socket)) {
+        return [
+            'ok' => false,
+            'code' => $errorNumber ?: 1,
+            'output' => 'AMI bağlantısı kurulamadı: ' . $errorMessage,
+        ];
+    }
+    stream_set_timeout($socket, 15);
+    $readMessage = static function ($stream): ?array {
+        $message = [];
+        while (!feof($stream)) {
+            $line = fgets($stream);
+            if ($line === false) {
+                return null;
+            }
+            $line = rtrim($line, "\r\n");
+            if ($line === '') {
+                break;
+            }
+            if (str_contains($line, ':')) {
+                [$key, $value] = explode(':', $line, 2);
+                $message[strtolower(trim($key))] = trim($value);
+            }
+        }
+        return $message ?: null;
+    };
+    $clean = static fn(mixed $value): string =>
+        str_replace(["\r", "\n"], '', (string) $value);
+
+    fwrite($socket, "Action: Login\r\nUsername: " . $clean(AMI_USER)
+        . "\r\nSecret: " . $clean(AMI_SECRET) . "\r\nEvents: off\r\n\r\n");
+    $login = $readMessage($socket);
+    if (strtolower((string) ($login['response'] ?? '')) !== 'success') {
+        fclose($socket);
+        return ['ok' => false, 'code' => 1, 'output' => 'AMI oturumu açılamadı'];
+    }
+
+    $pending = [];
+    $payload = '';
+    foreach (array_values($operations) as $index => $operation) {
+        $actionId = 'astera-db-' . $index . '-' . bin2hex(random_bytes(3));
+        $kind = (string) ($operation['action'] ?? '');
+        $payload .= 'Action: ' . ($kind === 'delete_tree' ? 'DBDelTree' : 'DBPut')
+            . "\r\nActionID: {$actionId}\r\n"
+            . 'Family: ' . $clean($operation['family'] ?? '') . "\r\n";
+        if ($kind !== 'delete_tree') {
+            $payload .= 'Key: ' . $clean($operation['key'] ?? '') . "\r\n"
+                . 'Val: ' . $clean($operation['value'] ?? '') . "\r\n";
+        }
+        $payload .= "\r\n";
+        $pending[$actionId] = true;
+    }
+    fwrite($socket, $payload);
+
+    $errors = [];
+    while ($pending && !feof($socket)) {
+        $message = $readMessage($socket);
+        if ($message === null) {
+            break;
+        }
+        $actionId = (string) ($message['actionid'] ?? '');
+        if ($actionId === '' || !isset($pending[$actionId])) {
+            continue;
+        }
+        unset($pending[$actionId]);
+        if (strtolower((string) ($message['response'] ?? '')) !== 'success') {
+            $detail = (string) ($message['message'] ?? 'Bilinmeyen AMI hatası');
+            if (!str_contains(strtolower($detail), 'not found')) {
+                $errors[] = $detail;
+            }
+        }
+    }
+    fwrite($socket, "Action: Logoff\r\n\r\n");
+    fclose($socket);
+    if ($pending) {
+        $errors[] = count($pending) . ' AstDB işlemi yanıt vermedi';
+    }
+    return [
+        'ok' => !$errors,
+        'code' => $errors ? 1 : 0,
+        'output' => $errors
+            ? implode("\n", array_unique($errors))
+            : count($operations) . ' AstDB işlemi tek AMI oturumunda uygulandı.',
+    ];
+}
+
 function pbx_blf_status(string $deptId): array
 {
     $extensions = array_values(array_filter(

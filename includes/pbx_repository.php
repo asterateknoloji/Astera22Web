@@ -27,6 +27,24 @@ function pbx_relational_supports(string $name): bool
  */
 function pbx_relational_json_rows(string $sql): array
 {
+    if (PHP_OS_FAMILY !== 'Windows' && extension_loaded('pdo_pgsql')) {
+        static $pdo = null;
+        if (!$pdo instanceof PDO) {
+            $pdo = new PDO(
+                'pgsql:dbname=' . PBX_DB_NAME,
+                null,
+                null,
+                [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_PERSISTENT => true,
+                ]
+            );
+        }
+        $rows = $pdo->query($sql)->fetchAll();
+        return is_array($rows) ? $rows : [];
+    }
+
     $ok = false;
     $rows = pbx_odbc_rows(
         "WITH encoded_rows AS (SELECT row_number() OVER () AS row_no, "
@@ -212,6 +230,49 @@ function pbx_relational_write(string $name, array $rows): void
     }
     $sql[] = 'COMMIT';
     store_database_exec(implode(";\n", $sql), 'İlişkisel yapılandırma yazılamadı: ' . $name);
+}
+
+function pbx_relational_upsert_row(
+    string $name,
+    array $row,
+    int $position
+): void {
+    if ($name === 'departments' || !in_array($name, pbx_relational_stores(), true)) {
+        throw new InvalidArgumentException('Tekil güncelleme desteklenmiyor: ' . $name);
+    }
+    $dept = (string) ($row['dept'] ?? 'genel');
+    $externalId = (string) ($row['id'] ?? '');
+    if ($externalId === '' && $name === 'extensions') {
+        $externalId = $dept . '-' . (string) ($row['exten'] ?? $position);
+    }
+    if ($dept === '' || $externalId === '') {
+        throw new RuntimeException("{$name} kaydında firma veya kimlik eksik");
+    }
+
+    $sql = [
+        'BEGIN',
+        'DELETE FROM pbx_config_entities WHERE dept_id = '
+            . pbx_sql_literal($dept)
+            . ' AND store_name = ' . pbx_sql_literal($name)
+            . ' AND external_id = ' . pbx_sql_literal($externalId)
+            . ' AND parent_entity_id IS NULL',
+    ];
+    pbx_relational_append_entity_sql(
+        $sql,
+        $name,
+        $dept,
+        $externalId,
+        null,
+        null,
+        null,
+        $position,
+        array_diff_key($row, ['id' => true, 'dept' => true])
+    );
+    $sql[] = 'COMMIT';
+    store_database_exec(
+        implode(";\n", $sql),
+        'İlişkisel yapılandırma kaydı güncellenemedi: ' . $name
+    );
 }
 
 function pbx_relational_append_entity_sql(
