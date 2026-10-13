@@ -29,6 +29,7 @@ foreach (departments() as $department) {
                 <?php if ($showDept): ?><th>Firma</th><?php endif; ?>
                 <th>Dahili</th>
                 <th>Ad</th>
+                <th>Tür</th>
                 <th>SIP kullanıcı</th>
                 <th>Auth kullanıcı</th>
                 <th>WebRTC</th>
@@ -40,6 +41,7 @@ foreach (departments() as $department) {
         </thead>
         <tbody>
         <?php foreach ($rows as $row): ?>
+            <?php $technology = strtolower((string) ($row['technology'] ?? 'pjsip')); ?>
             <tr data-ext-row data-search="<?= e(strtolower(trim(
                 (string) ($row['exten'] ?? '') . ' '
                 . (string) ($row['sipuser'] ?? '') . ' '
@@ -49,9 +51,14 @@ foreach (departments() as $department) {
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
                 <td><code><?= e($row['exten']) ?></code></td>
                 <td><?= e($row['name'] ?? '') ?></td>
-                <td><code><?= e($row['sipuser'] ?? $row['exten']) ?></code></td>
-                <td><code><?= e($row['authuser'] ?? $row['sipuser'] ?? $row['exten']) ?></code></td>
-                <td><?php if (!empty($row['webrtc'])): ?>
+                <td><span class="pill <?= $technology === 'dahdi' ? 'ok' : '' ?>"><?= $technology === 'dahdi' ? 'DAHDI' : 'PJSIP' ?></span></td>
+                <td><code><?= $technology === 'dahdi'
+                    ? 'g' . (int) ($row['dahdi_group'] ?? 0) . '/' . e((string) ($row['dahdi_dial'] ?? $row['exten']))
+                    : e($row['sipuser'] ?? $row['exten']) ?></code></td>
+                <td><code><?= $technology === 'dahdi' ? '—' : e($row['authuser'] ?? $row['sipuser'] ?? $row['exten']) ?></code></td>
+                <td><?php if ($technology === 'dahdi'): ?>
+                    <span class="pill dim">PRI</span>
+                <?php elseif (!empty($row['webrtc'])): ?>
                     <a class="pill ok" href="index.php?p=webrtc&amp;ext=<?= e($row['exten']) ?>">WebRTC</a>
                 <?php else: ?>
                     <span class="pill dim">kapalı</span>
@@ -71,7 +78,11 @@ foreach (departments() as $department) {
                     : !empty($extensionDept['record']);
                 ?>
                 <td><?= $recordEnabled ? strtoupper(e((string) ($row['record_format'] ?? 'wav'))) : 'Kapalı' ?></td>
-                <td><span class="pill dim ext-state" data-sip="<?= e($row['sipuser'] ?? $row['exten']) ?>">—</span></td>
+                <td><?php if ($technology === 'dahdi'): ?>
+                    <span class="pill dim">DAHDI</span>
+                <?php else: ?>
+                    <span class="pill dim ext-state" data-sip="<?= e($row['sipuser'] ?? $row['exten']) ?>">—</span>
+                <?php endif; ?></td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-ext='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
                     <button class="btn sm danger" type="button" data-del-ext="<?= e($row['id'] ?? ext_id((string) $row['dept'], (string) $row['exten'])) ?>">Sil</button>
@@ -79,7 +90,7 @@ foreach (departments() as $department) {
             </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-            <tr><td colspan="<?= $showDept ? 11 : 10 ?>" class="muted">Bu kapsamda abone yok.</td></tr>
+            <tr><td colspan="<?= $showDept ? 12 : 11 ?>" class="muted">Bu kapsamda abone yok.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>

@@ -366,23 +366,36 @@ const Astera = {
             const deptId = row.dept || window.ASTERA.dept || '';
             const dept = (window.ASTERA.depts || []).find((item) => item.id === deptId) || {};
             const recordEnabled = row.record ?? dept.record ?? true;
+            const technology = row.technology === 'dahdi' ? 'dahdi' : 'pjsip';
             this.modal(`
                 <div class="extension-modal-head">
                     <span class="extension-avatar">${row.exten || '+'}</span>
                     <div>
                         <h3>${row.exten ? 'Abone düzenle' : 'Abone ekle'}</h3>
-                        <p>${row.exten ? `${row.exten} numaralı abonenin kimlik, çağrı ve SIP ayarları` : 'Yeni abonenin kimlik, çağrı ve SIP ayarları'}</p>
+                        <p>${row.exten ? `${row.exten} numaralı abonenin kimlik, çağrı ve bağlantı ayarları` : 'Yeni abonenin kimlik, çağrı ve bağlantı ayarları'}</p>
                     </div>
                 </div>
                 <form id="f" class="extension-form">
                     <div class="extension-section-title">Kimlik ve erişim</div>
                     ${this.deptField(row.dept)}
+                    <label>Abone türü
+                        <select name="technology" id="extensionTechnology">
+                            <option value="pjsip" ${technology === 'pjsip' ? 'selected' : ''}>SIP / PJSIP abone</option>
+                            <option value="dahdi" ${technology === 'dahdi' ? 'selected' : ''}>DAHDI abone</option>
+                        </select>
+                    </label>
                     <label>Dahili<input name="exten" required value="${row.exten || ''}" ${row.exten ? 'readonly' : ''}></label>
                     <label>Ad<input name="name" value="${row.name || ''}"></label>
-                    <label>SIP kullanıcı<input name="sipuser" value="${row.sipuser || ''}" placeholder="boş = dahili no"></label>
-                    <label>Auth kullanıcı<input name="authuser" value="${row.authuser || row.sipuser || ''}" placeholder="softphone Authentication ID"></label>
-                    <label>Parola<input name="password" required value="${row.password || ''}"></label>
-                    <label>Eşzamanlı kayıt<input name="max_contacts" type="number" min="1" value="${row.max_contacts || 1}"></label>
+                    <label data-extension-tech="pjsip">SIP kullanıcı<input name="sipuser" value="${row.sipuser || ''}" placeholder="boş = dahili no"></label>
+                    <label data-extension-tech="pjsip">Auth kullanıcı<input name="authuser" value="${row.authuser || row.sipuser || ''}" placeholder="softphone Authentication ID"></label>
+                    <label data-extension-tech="pjsip">Parola<input name="password" value="${row.password || ''}"></label>
+                    <label data-extension-tech="pjsip">Eşzamanlı kayıt<input name="max_contacts" type="number" min="1" value="${row.max_contacts || 1}"></label>
+                    <label data-extension-tech="dahdi">DAHDI grup
+                        <input name="dahdi_group" type="number" min="0" max="63" value="${row.dahdi_group ?? 0}">
+                    </label>
+                    <label data-extension-tech="dahdi">Alcatel hedef numarası
+                        <input name="dahdi_dial" inputmode="numeric" value="${row.dahdi_dial || row.exten || ''}" placeholder="boş = dahili numarası">
+                    </label>
                     <label>Çalma süresi (sn)<input name="ringtime" type="number" min="8" value="${row.ringtime || 30}"></label>
                     <label>Giden CID<input name="cid_num" value="${row.cid_num || ''}" placeholder="firma CID yoksa"></label>
                     <div class="extension-section-title">Çağrı özellikleri</div>
@@ -413,7 +426,7 @@ const Astera = {
                         ${this.destPair('fallback_type', 'fallback_dest', row.fallback_type || 'hangup', row.fallback_dest || '')}
                     </fieldset>
                     <div class="extension-section-title">Bağlantı ve cihaz</div>
-                    <fieldset class="fieldset"><legend>WebRTC</legend>
+                    <fieldset class="fieldset" data-extension-tech="pjsip"><legend>WebRTC</legend>
                         <label><input type="checkbox" name="webrtc" ${row.webrtc ? 'checked' : ''}> Tarayıcı telefonu (WSS / WS)</label>
                         <label>CRM otomatik açma
                             <select name="crm_trigger">
@@ -424,7 +437,7 @@ const Astera = {
                         </label>
                         <p class="muted">Açıkken bu abone tarayıcıdan kaydolur. Klasik UDP softphone aynı abonede genelde çalışmaz; ayrı dahili kullanın. Opus otomatik eklenir.</p>
                     </fieldset>
-                    <fieldset class="fieldset"><legend>SIP</legend>
+                    <fieldset class="fieldset" data-extension-tech="pjsip"><legend>SIP</legend>
                         <label>DTMF
                             <select name="dtmf">
                                 <option value="rfc4733" ${(row.dtmf || 'rfc4733') === 'rfc4733' ? 'selected' : ''}>RFC4733</option>
@@ -441,7 +454,7 @@ const Astera = {
                         ${this.languageField(row.language || 'en', 'Abone dili')}
                         <label>Qualify (sn, 0=kapalı)<input name="qualify" type="number" min="0" value="${row.qualify ?? 0}"></label>
                     </fieldset>
-                    <fieldset class="fieldset extension-wide"><legend>Ses kodekleri</legend>
+                    <fieldset class="fieldset extension-wide" data-extension-tech="pjsip"><legend>Ses kodekleri</legend>
                         <div class="checks">${this.codecChecks(row.codecs || ['alaw','ulaw'])}</div>
                     </fieldset>
                     <div class="modal-actions extension-wide">
@@ -451,9 +464,24 @@ const Astera = {
                 </form>
             `, { closeOnBackdrop: false });
             this.bindDestPairs();
+            const form = document.getElementById('f');
+            const technologyInput = document.getElementById('extensionTechnology');
+            const applyTechnology = () => {
+                const selectedTechnology = technologyInput.value === 'dahdi' ? 'dahdi' : 'pjsip';
+                form.querySelectorAll('[data-extension-tech]').forEach((panel) => {
+                    const active = panel.dataset.extensionTech === selectedTechnology;
+                    panel.hidden = !active;
+                    panel.querySelectorAll('input, select, textarea').forEach((control) => {
+                        control.disabled = !active;
+                    });
+                });
+                form.elements.password.required = selectedTechnology === 'pjsip';
+            };
+            applyTechnology();
+            technologyInput.addEventListener('change', applyTechnology);
             document.getElementById('c').onclick = () => this.closeModal();
             this.formSubmit(
-                document.getElementById('f'),
+                form,
                 'extension_save',
                 {},
                 { skipUnchanged: Boolean(row.exten) }

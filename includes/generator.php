@@ -11,6 +11,28 @@ function ast_quote(string $value): string
     return str_replace(["\r", "\n"], '', $value);
 }
 
+function extension_is_dahdi(array $extension): bool
+{
+    return strtolower((string) ($extension['technology'] ?? 'pjsip')) === 'dahdi';
+}
+
+function extension_dial_channel(array $extension): string
+{
+    if (extension_is_dahdi($extension)) {
+        $group = max(0, min(63, (int) ($extension['dahdi_group'] ?? 0)));
+        $number = preg_replace('/\D/', '', (string) ($extension['dahdi_dial'] ?? $extension['exten'] ?? '')) ?? '';
+        return $number === '' ? '' : "DAHDI/g{$group}/{$number}";
+    }
+    $sip = sip_user($extension);
+    return $sip === '' ? '' : 'PJSIP/' . $sip;
+}
+
+function extension_member_channel(string $dept, string $extension): string
+{
+    $row = find_ext($dept, $extension);
+    return $row ? extension_dial_channel($row) : '';
+}
+
 function generate_all_configs(): array
 {
     $files = [
@@ -299,6 +321,9 @@ function generate_pjsip_endpoints(): string
 {
     $out = "; ASTERA aboneler (firma izole)\n\n";
     foreach (store_read('extensions') as $ext) {
+        if (extension_is_dahdi($ext)) {
+            continue;
+        }
         $sip = sip_user($ext);
         $num = ast_sanitize_id((string) ($ext['exten'] ?? ''));
         $dept = ast_sanitize_id((string) ($ext['dept'] ?? ''));
@@ -591,7 +616,9 @@ function generate_extensions(): string
             }
             $num = ast_sanitize_id((string) ($ext['exten'] ?? ''));
             $sip = sip_user($ext);
-            if ($num === '' || $sip === '') {
+            $dahdi = extension_is_dahdi($ext);
+            $dialChannel = extension_dial_channel($ext);
+            if ($num === '' || $dialChannel === '') {
                 continue;
             }
             $ring = max(8, (int) ($ext['ringtime'] ?? 30));
@@ -607,7 +634,9 @@ function generate_extensions(): string
             $fallbackType = dest_allowed((string) ($ext['fallback_type'] ?? 'hangup'));
             $fallbackDest = ast_sanitize_id((string) ($ext['fallback_dest'] ?? ''));
             $hasFallback = $fallbackType !== 'hangup' || $fallbackDest !== '';
-            $internal .= "exten => {$num},hint,PJSIP/{$sip}\n";
+            if (!$dahdi) {
+                $internal .= "exten => {$num},hint,PJSIP/{$sip}\n";
+            }
             $internal .= "exten => {$num},1,Set(ASTERA_RECORD_DEST={$num})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_ENABLED=" . ($extensionRecord ? '1' : '0') . ")\n";
             $internal .= " same => n,Set(ASTERA_RECORD_FORMAT={$extensionRecordFormat})\n";
@@ -623,13 +652,19 @@ function generate_extensions(): string
             if ($cidExt !== '') {
                 $internal .= " same => n,ExecIf(\$[\"\${ASTERA_TRANSFER_DISPLAY}\" = \"\"]?Set(CALLERID(num)={$cidExt}))\n";
             }
-            $internal .= " same => n,Set(DIALCONTACTS=\${PJSIP_DIAL_CONTACTS({$sip})})\n";
-            $internal .= " same => n,Dial(\${DIALCONTACTS},{$ring},tTrb({$sub}^transfer-preserve^1))\n";
+            if ($dahdi) {
+                $internal .= " same => n,Dial({$dialChannel},{$ring},tTrb({$sub}^transfer-preserve^1))\n";
+            } else {
+                $internal .= " same => n,Set(DIALCONTACTS=\${PJSIP_DIAL_CONTACTS({$sip})})\n";
+                $internal .= " same => n,Dial(\${DIALCONTACTS},{$ring},tTrb({$sub}^transfer-preserve^1))\n";
+            }
             foreach ($fm as $extra) {
                 $extra = ast_sanitize_id($extra);
                 if ($extra !== '' && $extra !== $num) {
-                    $esip = member_sip($id, $extra);
-                    $internal .= " same => n,Dial(PJSIP/{$esip},15,tTrb({$sub}^transfer-preserve^1))\n";
+                    $followChannel = extension_member_channel($id, $extra);
+                    if ($followChannel !== '') {
+                        $internal .= " same => n,Dial({$followChannel},15,tTrb({$sub}^transfer-preserve^1))\n";
+                    }
                 }
             }
             if ($hasFallback) {

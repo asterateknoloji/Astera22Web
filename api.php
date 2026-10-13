@@ -298,30 +298,47 @@ try {
             if (strlen($exten) < 2 || strlen($exten) > 8) {
                 json_out(['ok' => false, 'error' => 'Dahili 2-8 haneli olmalı']);
             }
-            $password = trim((string) ($_POST['password'] ?? ''));
-            if ($password === '') {
-                json_out(['ok' => false, 'error' => 'Parola zorunlu']);
-            }
             $id = ext_id($dept, $exten);
             $old = find_by('extensions', 'id', $id);
+            $technology = strtolower((string) ($_POST['technology'] ?? ($old['technology'] ?? 'pjsip')));
+            if (!in_array($technology, ['pjsip', 'dahdi'], true)) {
+                json_out(['ok' => false, 'error' => 'Geçersiz abone bağlantı türü'], 422);
+            }
+            $isDahdi = $technology === 'dahdi';
+            $password = trim((string) ($_POST['password'] ?? ''));
+            if (!$isDahdi && $password === '') {
+                json_out(['ok' => false, 'error' => 'Parola zorunlu']);
+            }
+            if ($isDahdi) {
+                $password = '';
+            }
             if (!$old) {
                 assert_extension_capacity($dept);
             }
-            $wantSip = ast_sanitize_id((string) ($_POST['sipuser'] ?? ''));
-            if ($wantSip === '') {
-                $wantSip = (string) ($old['sipuser'] ?? $exten);
+            $sip = '';
+            $auth = '';
+            if (!$isDahdi) {
+                $wantSip = ast_sanitize_id((string) ($_POST['sipuser'] ?? ''));
+                if ($wantSip === '') {
+                    $wantSip = (string) ($old['sipuser'] ?? $exten);
+                }
+                $sip = pick_sip_user($dept, $exten, $wantSip);
+                $other = find_sip_user($sip);
+                if ($other && ((string) ($other['id'] ?? '') !== $id) && sip_user($other) === $sip) {
+                    json_out(['ok' => false, 'error' => 'Bu SIP kullanıcı adı başka abonede kayıtlı: ' . $sip]);
+                }
+                $auth = ast_sanitize_id((string) ($_POST['authuser'] ?? ''));
+                if ($auth === '') {
+                    $auth = ast_sanitize_id((string) ($old['authuser'] ?? $sip));
+                }
+                if ($auth === '') {
+                    $auth = $sip;
+                }
             }
-            $sip = pick_sip_user($dept, $exten, $wantSip);
-            $other = find_sip_user($sip);
-            if ($other && ((string) ($other['id'] ?? '') !== $id) && sip_user($other) === $sip) {
-                json_out(['ok' => false, 'error' => 'Bu SIP kullanıcı adı başka abonede kayıtlı: ' . $sip]);
-            }
-            $auth = ast_sanitize_id((string) ($_POST['authuser'] ?? ''));
-            if ($auth === '') {
-                $auth = ast_sanitize_id((string) ($old['authuser'] ?? $sip));
-            }
-            if ($auth === '') {
-                $auth = $sip;
+            $dahdiGroup = max(0, min(63, (int) ($_POST['dahdi_group'] ?? 0)));
+            $dahdiDial = preg_replace('/\D/', '', (string) ($_POST['dahdi_dial'] ?? '')) ?? '';
+            if ($isDahdi && $dahdiDial === '') {
+                $dahdiDial = $exten;
             }
             $codecs = $_POST['codecs'] ?? ['alaw', 'ulaw'];
             if (!is_array($codecs)) {
@@ -347,8 +364,11 @@ try {
                 'id' => $id,
                 'dept' => $dept,
                 'exten' => $exten,
+                'technology' => $technology,
                 'sipuser' => $sip,
                 'authuser' => $auth,
+                'dahdi_group' => $isDahdi ? $dahdiGroup : null,
+                'dahdi_dial' => $isDahdi ? $dahdiDial : '',
                 'name' => trim((string) ($_POST['name'] ?? $exten)),
                 'password' => $password,
                 'max_contacts' => max(1, (int) ($_POST['max_contacts'] ?? 1)),
