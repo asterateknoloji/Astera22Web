@@ -37,10 +37,8 @@ function cdr_export_description(array $row): string
 
 function cdr_export_internal(array $row): string
 {
-    if (!preg_match('#^PJSIP/(.+)-[A-Fa-f0-9]+$#', (string) ($row['channel'] ?? ''), $match)) {
-        return '';
-    }
-    $extension = find_sip_user($match[1]);
+    $info = pbx_cdr_internal_info($row, current_dept_id());
+    $extension = $info['extension'] ?? null;
     return $extension
         ? trim((string) ($extension['exten'] ?? '') . ' ' . (string) ($extension['name'] ?? ''))
         : '';

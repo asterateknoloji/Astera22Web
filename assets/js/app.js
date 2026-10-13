@@ -681,6 +681,22 @@ const Astera = {
             if (!trunks.length) return this.toast('Önce bir firmaya trunk ekleyin. Trunk Astera’da.', true);
             open();
         };
+        document.querySelectorAll('[data-move-out]').forEach((button) => {
+            button.onclick = async () => {
+                const moveButtons = [...document.querySelectorAll('[data-move-out]')];
+                moveButtons.forEach((item) => { item.disabled = true; });
+                try {
+                    await this.post('outbound_reorder', {
+                        id: button.dataset.moveOut,
+                        direction: button.dataset.direction,
+                    });
+                    location.reload();
+                } catch (error) {
+                    moveButtons.forEach((item) => { item.disabled = false; });
+                    this.toast(error.message, true);
+                }
+            };
+        });
         document.querySelectorAll('[data-edit-out]').forEach((b) => b.onclick = () => open(JSON.parse(b.dataset.editOut)));
         document.querySelectorAll('[data-del-out]').forEach((b) => b.onclick = async () => {
             if (!confirm('Kural silinsin mi?')) return;

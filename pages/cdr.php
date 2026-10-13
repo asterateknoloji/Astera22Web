@@ -164,12 +164,9 @@ $cdrDescription = static function (array $cdr): string {
             <?php $recording = $recordingFor($row); ?>
             <?php $description = $cdrDescription($row); ?>
             <?php
-            $callerEndpoint = '';
-            $callerExtension = null;
-            if (preg_match('#^PJSIP/(.+)-[A-Fa-f0-9]+$#', (string) ($row['channel'] ?? ''), $callerMatch)) {
-                $callerEndpoint = $callerMatch[1];
-                $callerExtension = find_sip_user($callerEndpoint);
-            }
+            $callerInfo = pbx_cdr_internal_info($row, current_dept_id());
+            $callerExtension = $callerInfo['extension'] ?? null;
+            $callerEndpoint = (string) ($callerInfo['endpoint'] ?? '');
             ?>
             <tr>
                 <td><?= e($row['accountcode'] ?: $row['userfield'] ?: '—') ?></td>

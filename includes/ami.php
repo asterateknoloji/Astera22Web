@@ -204,6 +204,7 @@ function pbx_status(?string $deptId = null): array
         }
     }
     $extensionsBySip = [];
+    $extensionsByNumber = [];
     foreach (store_read('extensions') as $extensionRow) {
         if ($deptId !== null && (string) ($extensionRow['dept'] ?? '') !== $deptId) {
             continue;
@@ -212,12 +213,25 @@ function pbx_status(?string $deptId = null): array
         if ($sip !== '') {
             $extensionsBySip[$sip] = $extensionRow;
         }
-    }
-    $extensionForChannel = static function (string $channel) use ($extensionsBySip): ?array {
-        if (!preg_match('#^PJSIP/(.+)-[A-Fa-f0-9]+$#', $channel, $channelMatch)) {
-            return null;
+        $extensionNumber = (string) ($extensionRow['exten'] ?? '');
+        if ($extensionNumber !== '') {
+            $extensionsByNumber[$extensionNumber] = $extensionRow;
         }
-        return $extensionsBySip[$channelMatch[1]] ?? null;
+    }
+    $extensionForChannel = static function (string $channel) use (
+        $extensionsBySip,
+        $extensionsByNumber
+    ): ?array {
+        if (preg_match('#^PJSIP/(.+)-[A-Fa-f0-9]+$#', $channel, $channelMatch)) {
+            return $extensionsBySip[$channelMatch[1]] ?? null;
+        }
+        if (preg_match('#^DAHDI/[^/]+/([0-9A-Za-z_]+)-#', $channel, $channelMatch)) {
+            return $extensionsByNumber[$channelMatch[1]] ?? null;
+        }
+        if (preg_match('#^Local/([^@;]+)@#', $channel, $channelMatch)) {
+            return $extensionsByNumber[$channelMatch[1]] ?? null;
+        }
+        return null;
     };
 
     $channelRows = [];
@@ -957,18 +971,21 @@ function pbx_cdr(int $limit = 400, ?string $deptId = null, array $filters = []):
         foreach (array_unique($sipUsers) as $sipUser) {
             $channelClauses[] = 'channel ILIKE ' . pbx_sql_literal('%/' . $sipUser . '-%');
         }
+        $channelClauses[] = 'outbound_cnum = ' . pbx_sql_literal($internal);
+        $channelClauses[] = "(dcontext LIKE 'out-%' AND cnum = " . pbx_sql_literal($internal) . ')';
         $clauses[] = '(' . implode(' OR ', $channelClauses) . ')';
     }
     $where = $clauses ? ' WHERE ' . implode(' AND ', $clauses) : '';
     $dbQueryOk = false;
     $dbRows = pbx_odbc_rows(
-        "SELECT clid, src, dst, dcontext, channel, dstchannel, lastapp, lastdata, "
+        "SELECT clid, src, dst, dcontext, channel, dstchannel, lastapp, "
+        . "replace(lastdata, '^', '|') AS lastdata, "
         . "to_char(COALESCE(start, calldate), 'YYYY-MM-DD HH24:MI:SS') AS start, "
         . "to_char(answer, 'YYYY-MM-DD HH24:MI:SS') AS answer, "
         . "to_char(COALESCE(call_end, calldate + (duration * interval '1 second')), "
         . "'YYYY-MM-DD HH24:MI:SS') AS end, "
         . "duration, billsec, disposition, amaflags, accountcode, peeraccount, uniqueid, "
-        . "userfield, sequence, linkedid, recordingfile "
+        . "userfield, sequence, linkedid, recordingfile, cnum, cnam, outbound_cnum, outbound_cnam "
         . "FROM cdr{$where} ORDER BY calldate DESC LIMIT {$limit}",
         $dbQueryOk
     );
@@ -1019,9 +1036,65 @@ function pbx_cdr(int $limit = 400, ?string $deptId = null, array $filters = []):
             'sequence' => $cols[20] ?? '',
             'linkedid' => $cols[19] ?? ($cols[16] ?? ''),
             'recordingfile' => '',
+            'cnum' => '',
+            'cnam' => '',
+            'outbound_cnum' => '',
+            'outbound_cnam' => '',
         ];
     }
     return array_reverse($rows);
+}
+
+function pbx_cdr_internal_info(array $cdr, ?string $deptId = null): ?array
+{
+    $candidates = [];
+    $endpoint = '';
+    $channel = trim((string) ($cdr['channel'] ?? ''));
+
+    if (preg_match('#^PJSIP/(.+)-[A-Fa-f0-9]+$#', $channel, $match)) {
+        $endpoint = $match[1];
+        $sipExtension = find_sip_user($endpoint);
+        if ($sipExtension !== null
+            && ($deptId === null || (string) ($sipExtension['dept'] ?? '') === $deptId)
+        ) {
+            return ['extension' => $sipExtension, 'endpoint' => $endpoint];
+        }
+    }
+
+    $candidates[] = trim((string) ($cdr['outbound_cnum'] ?? ''));
+    if (str_starts_with((string) ($cdr['dcontext'] ?? ''), 'out-')) {
+        $candidates[] = trim((string) ($cdr['cnum'] ?? ''));
+    }
+    if (preg_match('/-dahili_([0-9A-Za-z_]+)-numara_/', (string) ($cdr['recordingfile'] ?? ''), $match)) {
+        $candidates[] = $match[1];
+    }
+    if (preg_match('#^DAHDI/[^/]+/([0-9A-Za-z_]+)-#', $channel, $match)) {
+        $candidates[] = $match[1];
+        $endpoint = preg_replace('/-[^-]+$/', '', $channel) ?? $channel;
+    } elseif (preg_match('#^Local/([^@;]+)@#', $channel, $match)) {
+        $candidates[] = $match[1];
+        $endpoint = preg_replace('/;[12]$/', '', $channel) ?? $channel;
+    }
+
+    foreach (array_unique(array_filter($candidates, static fn(string $value): bool => $value !== '')) as $number) {
+        $extension = $deptId !== null ? find_ext($deptId, $number) : null;
+        if ($extension === null && $deptId === null) {
+            foreach (store_read('extensions') as $candidate) {
+                if ((string) ($candidate['exten'] ?? '') === $number) {
+                    $extension = $candidate;
+                    break;
+                }
+            }
+        }
+        if ($extension !== null) {
+            return [
+                'extension' => $extension,
+                'endpoint' => $endpoint !== '' ? $endpoint : $number,
+            ];
+        }
+    }
+
+    return null;
 }
 
 function cdr_summary(array $rows): array

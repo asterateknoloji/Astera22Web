@@ -508,6 +508,8 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #eee4d6; vertical-align: top; }
 th { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .right { text-align: right; white-space: nowrap; }
+.row-actions { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.row-actions strong { min-width: 20px; text-align: center; }
 .list { display: grid; gap: 8px; }
 .list .row { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid #eee4d6; }
 .sound-list { display: grid; }

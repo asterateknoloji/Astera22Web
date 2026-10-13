@@ -546,6 +546,41 @@ try {
             ], 'id');
             json_out(array_merge(['ok' => true], apply_to_pbx()));
 
+        case 'outbound_reorder':
+            $dept = require_dept_id();
+            $id = ast_sanitize_id((string) ($_POST['id'] ?? ''));
+            $direction = strtolower((string) ($_POST['direction'] ?? ''));
+            if ($id === '' || !in_array($direction, ['up', 'down'], true)) {
+                json_out(['ok' => false, 'error' => 'Geçersiz sıralama isteği'], 422);
+            }
+            $outboundRows = store_read('outbound');
+            $targetIndex = null;
+            $deptIndexes = [];
+            foreach ($outboundRows as $index => $outboundRow) {
+                if ((string) ($outboundRow['dept'] ?? '') !== $dept) {
+                    continue;
+                }
+                $deptIndexes[] = $index;
+                if ((string) ($outboundRow['id'] ?? '') === $id) {
+                    $targetIndex = $index;
+                }
+            }
+            if ($targetIndex === null) {
+                json_out(['ok' => false, 'error' => 'Giden arama kuralı bulunamadı'], 404);
+            }
+            $position = array_search($targetIndex, $deptIndexes, true);
+            $swapPosition = $direction === 'up' ? $position - 1 : $position + 1;
+            if (!isset($deptIndexes[$swapPosition])) {
+                json_out(['ok' => true, 'moved' => false]);
+            }
+            $swapIndex = $deptIndexes[$swapPosition];
+            [$outboundRows[$targetIndex], $outboundRows[$swapIndex]] = [
+                $outboundRows[$swapIndex],
+                $outboundRows[$targetIndex],
+            ];
+            store_write('outbound', array_values($outboundRows));
+            json_out(array_merge(['ok' => true, 'moved' => true], apply_to_pbx()));
+
         case 'outbound_delete':
             $id = ast_sanitize_id((string) ($_POST['id'] ?? ''));
             $row = find_by('outbound', 'id', $id);
