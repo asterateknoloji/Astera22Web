@@ -11,8 +11,9 @@ function pbx_ssh(string $script): array
 
     if (PHP_OS_FAMILY === 'Windows') {
         $cmd = sprintf(
-            '"%s" -ssh %s@%s -pw %s -hostkey %s -batch -m "%s"',
+            '"%s" -ssh -P %d %s@%s -pw %s -hostkey %s -batch -m "%s"',
             PLINK,
+            SSH_PORT,
             SSH_USER,
             PBX_SSH_HOST,
             SSH_PASS,
@@ -50,8 +51,9 @@ function pbx_upload(string $local, string $remote): array
 
     if (PHP_OS_FAMILY === 'Windows') {
         $cmd = sprintf(
-            '"%s" -pw %s -hostkey %s -batch "%s" %s@%s:%s',
+            '"%s" -P %d -pw %s -hostkey %s -batch "%s" %s@%s:%s',
             PSCP,
+            SSH_PORT,
             SSH_PASS,
             PBX_HOSTKEY,
             $local,
@@ -60,7 +62,7 @@ function pbx_upload(string $local, string $remote): array
             $remote
         );
     } else {
-        $cmd = pbx_openssh_prefix() . 'scp ' . pbx_openssh_options() . ' '
+        $cmd = pbx_openssh_prefix() . 'scp ' . pbx_openssh_options(true) . ' '
             . escapeshellarg($local) . ' '
             . escapeshellarg(SSH_USER . '@' . PBX_SSH_HOST . ':' . $remote);
     }
@@ -78,8 +80,9 @@ function pbx_download(string $remote, string $local): array
     }
     if (PHP_OS_FAMILY === 'Windows') {
         $cmd = sprintf(
-            '"%s" -pw %s -hostkey %s -batch %s@%s:%s "%s"',
+            '"%s" -P %d -pw %s -hostkey %s -batch %s@%s:%s "%s"',
             PSCP,
+            SSH_PORT,
             SSH_PASS,
             PBX_HOSTKEY,
             SSH_USER,
@@ -88,7 +91,7 @@ function pbx_download(string $remote, string $local): array
             $local
         );
     } else {
-        $cmd = pbx_openssh_prefix() . 'scp ' . pbx_openssh_options() . ' '
+        $cmd = pbx_openssh_prefix() . 'scp ' . pbx_openssh_options(true) . ' '
             . escapeshellarg(SSH_USER . '@' . PBX_SSH_HOST . ':' . $remote) . ' '
             . escapeshellarg($local);
     }
@@ -98,9 +101,16 @@ function pbx_download(string $remote, string $local): array
     return ['ok' => $code === 0 && is_file($local), 'code' => $code, 'output' => trim(implode("\n", $lines))];
 }
 
-function pbx_openssh_options(): string
+function pbx_openssh_options(bool $forScp = false): string
 {
-    $options = ['-o', SSH_KEY !== '' ? 'BatchMode=yes' : 'BatchMode=no', '-o', 'ConnectTimeout=10'];
+    $options = [
+        $forScp ? '-P' : '-p',
+        (string) SSH_PORT,
+        '-o',
+        SSH_KEY !== '' ? 'BatchMode=yes' : 'BatchMode=no',
+        '-o',
+        'ConnectTimeout=10',
+    ];
     if (SSH_KEY !== '') {
         $options[] = '-i';
         $options[] = SSH_KEY;

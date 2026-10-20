@@ -36,6 +36,8 @@ define('PANEL_DOMAIN', astera_env('ASTERA_PANEL_DOMAIN', 'santral.astera.com.tr'
 define('PBX_PUBLIC_IP', astera_env('ASTERA_PBX_PUBLIC_IP', ''));
 define('PBX_LOCAL_NET', astera_env('ASTERA_PBX_LOCAL_NET', '192.168.181.0/24'));
 define('SSH_USER', astera_env('ASTERA_SSH_USER', 'root'));
+$sshPort = (int) astera_env('ASTERA_SSH_PORT', '22');
+define('SSH_PORT', $sshPort >= 1 && $sshPort <= 65535 ? $sshPort : 22);
 define(
     'SSH_PASS',
     getenv('ASTERA_SSH_PASS') === false ? 'nt1975tn' : (string) getenv('ASTERA_SSH_PASS')
