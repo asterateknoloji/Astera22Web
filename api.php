@@ -467,11 +467,16 @@ try {
                 $dtmfMode = 'auto';
                 $mediaEncryption = 'no';
             }
+            $inboundMode = (string) ($_POST['inbound_mode'] ?? 'routes');
+            if (!in_array($inboundMode, ['routes', 'direct'], true)) {
+                $inboundMode = 'routes';
+            }
             store_upsert('trunks', [
                 'id' => $id,
                 'dept' => $dept,
                 'name' => trim((string) ($_POST['name'] ?? $id)),
                 'type' => $trunkType,
+                'inbound_mode' => $inboundMode,
                 'enabled' => $old ? ($old['enabled'] ?? true) : true,
                 'host' => $host,
                 'port' => (int) ($_POST['port'] ?? 5060) ?: 5060,

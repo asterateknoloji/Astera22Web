@@ -551,6 +551,7 @@ const Astera = {
 
     pageTrunks() {
         const open = (row = {}) => {
+            const inboundMode = row.inbound_mode || (row.id && row.type === 'peer' ? 'direct' : 'routes');
             this.modal(`
                 <h3>${row.id ? 'Trunk düzenle' : 'Trunk ekle'}</h3>
                 <form id="f" class="trunk-form">
@@ -564,6 +565,13 @@ const Astera = {
                         </select>
                     </label>
                     <p class="muted"><strong>Register trunk:</strong> 908503338008 master PJSIP şablonu kullanılır. Yalnız trunk kimliği, kullanıcı, parola ve sunucu bilgileri değişir.</p>
+                    <label>Gelen çağrı işleme
+                        <select name="inbound_mode">
+                            <option value="routes" ${inboundMode === 'routes' ? 'selected' : ''}>Gelen çağrı kurallarını kullan</option>
+                            <option value="direct" ${inboundMode === 'direct' ? 'selected' : ''}>Dahilileri doğrudan ara (PBX bağlantısı)</option>
+                        </select>
+                    </label>
+                    <p class="muted">Telekom/SIP operatörü için “Gelen çağrı kuralları”, Alcatel veya başka bir PBX doğrudan dahili gönderiyorsa “Dahilileri doğrudan ara” seçin.</p>
                     <label>Sunucu / IP<input name="host" required value="${row.host || ''}"></label>
                     <label>Port<input name="port" type="number" value="${row.port || 5060}"></label>
                     <label>Kullanıcı<input name="username" value="${row.username || ''}"></label>

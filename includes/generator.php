@@ -684,7 +684,9 @@ CONF;
         $peerIdentityLines = $type === 'peer'
             ? "send_pai=yes\nsend_rpid=yes\ntrust_id_outbound=yes\n"
             : '';
-        $inboundContext = $type === 'peer' ? ctx($dept, 'from') : 'from-pstn';
+        $legacyInboundMode = $type === 'peer' ? 'direct' : 'routes';
+        $inboundMode = (string) ($trunk['inbound_mode'] ?? $legacyInboundMode);
+        $inboundContext = $inboundMode === 'direct' ? ctx($dept, 'from') : 'from-pstn';
         $out .= <<<CONF
 [{$id}]
 type=endpoint
