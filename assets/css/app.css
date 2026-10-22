@@ -1004,3 +1004,126 @@ audio { height: 32px; max-width: 280px; }
     .sound-row { grid-template-columns: 1fr; }
     .topbar, .content { padding-left: 16px; padding-right: 16px; }
 }
+
+.security-intro {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 24px;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, #fffaf3 0%, #fff 60%, #edf7f2 100%);
+}
+.security-intro h2 { margin: 6px 0 8px; font-size: 22px; }
+.security-intro p { max-width: 700px; margin: 0; line-height: 1.55; }
+.security-kicker {
+    color: #a6522c;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .12em;
+}
+.security-current-ip {
+    min-width: 250px;
+    padding: 14px 16px;
+    border: 1px solid rgba(47, 125, 87, .2);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .82);
+}
+.security-current-ip span, .security-current-ip small {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+}
+.security-current-ip strong {
+    display: block;
+    margin: 4px 0;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 18px;
+}
+.security-form { display: grid; gap: 16px; }
+.security-rule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.security-rule-card { display: grid; align-content: start; gap: 16px; }
+.security-rule-heading { display: flex; align-items: flex-start; gap: 12px; }
+.security-rule-heading h2 { margin: 1px 0 5px; }
+.security-rule-heading p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.security-step {
+    display: inline-grid;
+    flex: 0 0 30px;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    border-radius: 50%;
+    background: #c45d32;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 800;
+}
+.security-field { display: grid; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 700; }
+.security-field textarea {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+    padding: 12px;
+    color: var(--ink);
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+}
+.security-field textarea:focus {
+    outline: 0;
+    border-color: #bb6b43;
+    box-shadow: 0 0 0 3px rgba(187, 107, 67, .12);
+}
+.security-port-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.security-port-list span {
+    padding: 6px 9px;
+    border-radius: 8px;
+    background: #f1ece4;
+    color: var(--muted);
+    font-size: 12px;
+}
+.security-port-list strong { color: var(--ink); }
+.security-web-card { padding-top: 15px; padding-bottom: 15px; }
+.security-toggle { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.security-toggle input { width: 18px; height: 18px; margin-top: 2px; accent-color: #c45d32; }
+.security-toggle span { display: grid; gap: 4px; }
+.security-toggle small { color: var(--muted); line-height: 1.45; }
+.security-apply-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, .7fr) auto;
+    align-items: center;
+    gap: 20px;
+}
+.security-safety {
+    display: grid;
+    gap: 3px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    background: #e8f4ec;
+    color: #246344;
+}
+.security-safety strong { font-size: 13px; }
+.security-safety span { font-size: 12px; line-height: 1.4; }
+.security-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.security-live { margin-top: 16px; }
+.security-live summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    cursor: pointer;
+    list-style: none;
+}
+.security-live summary::-webkit-details-marker { display: none; }
+.security-live summary span:first-child { display: grid; gap: 3px; }
+.security-live summary small { color: var(--muted); }
+.security-live[open] summary { margin-bottom: 14px; }
+.security-live .log { max-height: 440px; margin: 0; }
+.log-browser { display: grid; gap: 16px; }
+
+@media (max-width: 900px) {
+    .security-intro, .security-rule-grid, .security-apply-card { grid-template-columns: 1fr; }
+    .security-current-ip { min-width: 0; }
+}

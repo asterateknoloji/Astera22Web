@@ -171,7 +171,7 @@ printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc]
     "${VERSION_CODENAME}" >/etc/apt/sources.list.d/pgdg.list
 apt-get update
 apt-get install -y --no-install-recommends \
-    ca-certificates curl wget gnupg lsb-release openssl rsync openssh-client sshpass \
+    ca-certificates curl wget gnupg lsb-release openssl rsync openssh-client openssh-server sshpass \
     build-essential pkg-config git subversion \
     libedit-dev libjansson-dev libxml2-dev libxslt1-dev libsqlite3-dev uuid-dev \
     libssl-dev libncurses5-dev libnewt-dev libcurl4-openssl-dev \
@@ -179,8 +179,20 @@ apt-get install -y --no-install-recommends \
     libopus-dev libsrtp2-dev libspandsp-dev libical-dev libneon27-dev \
     unixodbc unixodbc-dev odbc-postgresql libpq-dev \
     postgresql-16 postgresql-client-16 \
-    nginx certbot python3-certbot-nginx \
+    nginx certbot python3-certbot-nginx ufw fail2ban \
+    iproute2 net-tools iputils-ping dnsutils ethtool traceroute mtr-tiny \
     php-fpm php-cli php-pgsql php-mbstring php-curl php-xml php-zip php-intl php-gd
+
+log "Webmin resmi deposu ve paketi kuruluyor"
+WEBMIN_REPO_SCRIPT="$(mktemp /var/tmp/webmin-setup-repo.XXXXXX.sh)"
+curl -fsSL --retry 3 \
+    https://raw.githubusercontent.com/webmin/webmin/master/webmin-setup-repo.sh \
+    -o "$WEBMIN_REPO_SCRIPT"
+sh "$WEBMIN_REPO_SCRIPT" --force --stable
+rm -f "$WEBMIN_REPO_SCRIPT"
+apt-get update
+apt-get install -y --install-recommends webmin
+systemctl enable --now webmin
 
 SSH_OPTIONS=(
     -p "$SOURCE_SSH_PORT"
@@ -860,9 +872,32 @@ systemctl restart "$PHP_FPM_SERVICE" nginx
 [[ -f /etc/systemd/system/astera-cdr-partitions.timer ]] \
     && systemctl enable --now astera-cdr-partitions.timer
 
+if command -v sshd >/dev/null 2>&1; then
+    log "SSH 22 ve 45555 portlarini dinleyecek sekilde ayarlaniyor"
+    install -d -m 0755 /etc/ssh/sshd_config.d
+    cat >/etc/ssh/sshd_config.d/99-astera-ports.conf <<'EOF'
+Port 22
+Port 45555
+EOF
+    sshd -t
+    if systemctl list-unit-files ssh.socket --no-legend 2>/dev/null | grep -q '^ssh\.socket'; then
+        install -d -m 0755 /etc/systemd/system/ssh.socket.d
+        cat >/etc/systemd/system/ssh.socket.d/99-astera-ports.conf <<'EOF'
+[Socket]
+ListenStream=
+ListenStream=22
+ListenStream=45555
+EOF
+        systemctl daemon-reload
+        systemctl restart ssh.socket
+    fi
+    systemctl restart ssh
+fi
+
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
     log "Etkin UFW icin gerekli portlar aciliyor"
     ufw allow 22/tcp
+    ufw allow 45555/tcp
     ufw allow 80/tcp
     ufw allow 443/tcp
     ufw allow 5060/udp

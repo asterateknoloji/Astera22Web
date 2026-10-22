@@ -1408,13 +1408,19 @@ try {
                 'ufw allow in on lo',
                 'ufw allow 80/tcp comment astera-http-certbot',
             ];
+            $commands[] = <<<'SH'
+{ printf '%s\n' 22 45555; sshd -T 2>/dev/null | awk '$1 == "port" {print $2}'; } | sort -un | while IFS= read -r ssh_port; do case "$ssh_port" in ''|*[!0-9]*) continue ;; esac; ufw allow "$ssh_port/tcp" comment astera-ssh; done
+SH;
+            $commands[] = <<<'SH'
+for interface in $(ip -o -4 route show default | awk '{for (i=1; i<=NF; i++) if ($i == "dev") print $(i+1)}' | sort -u); do ip -o -4 route show proto kernel scope link dev "$interface"; done | awk '$1 ~ /^10\./ || $1 ~ /^192\.168\./ || $1 ~ /^172\.(1[6-9]|2[0-9]|3[01])\./ {print $1}' | sort -u | while IFS= read -r network; do ufw allow from "$network" comment astera-local-network; done
+SH;
             if ($publicWeb) {
                 $commands[] = 'ufw allow 443/tcp comment astera-https';
             }
             foreach ($management as $network) {
                 $source = escapeshellarg($network);
-                $commands[] = "ufw allow from {$source} to any port 22 proto tcp comment astera-management-ssh";
                 $commands[] = "ufw allow from {$source} to any port 5432 proto tcp comment astera-management-db";
+                $commands[] = "ufw allow from {$source} to any port 10000 proto tcp comment astera-management-webmin";
                 if (!$publicWeb) {
                     $commands[] = "ufw allow from {$source} to any port 443 proto tcp comment astera-management-web";
                 }
@@ -1442,6 +1448,9 @@ try {
             }
             $rollbackUnit = 'astera-firewall-rollback-' . date('YmdHis');
             $commands[] = 'ufw --force enable';
+            $commands[] = 'if systemctl list-unit-files astera-network-routes.service --no-legend 2>/dev/null'
+                . " | grep -q '^astera-network-routes\\.service'; then "
+                . 'systemctl reload astera-network-routes.service; fi';
             $commands[] = 'systemd-run --quiet --unit=' . escapeshellarg($rollbackUnit)
                 . ' --on-active=5m /usr/sbin/ufw --force disable';
             $commands[] = 'ufw status numbered';
