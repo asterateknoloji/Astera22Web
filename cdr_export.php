@@ -20,6 +20,23 @@ $stamp = date('Ymd-His');
 function cdr_export_description(array $row): string
 {
     $parts = explode('|', (string) ($row['userfield'] ?? ''));
+    if (($parts[1] ?? '') === 'CID') {
+        $labels = [];
+        $inbound = trim((string) ($parts[2] ?? ''));
+        $destinationType = strtoupper(trim((string) ($parts[3] ?? '')));
+        $destination = trim((string) ($parts[4] ?? ''));
+        if ($inbound !== '') {
+            $labels[] = 'Inbound: ' . $inbound;
+        }
+        if ($destination !== '') {
+            $labels[] = match ($destinationType) {
+                'QUEUE' => 'Kuyruk: ' . $destination,
+                'RINGGROUP' => 'Ring grup: ' . $destination,
+                default => 'Hedef: ' . $destination,
+            };
+        }
+        return implode(' · ', $labels);
+    }
     if (($parts[1] ?? '') === 'BLACKLIST') {
         return 'Kara liste nedeniyle reddedildi: ' . (string) ($parts[2] ?? $row['src'] ?? '');
     }

@@ -110,6 +110,8 @@ function pbx_openssh_options(bool $forScp = false): string
         SSH_KEY !== '' ? 'BatchMode=yes' : 'BatchMode=no',
         '-o',
         'ConnectTimeout=10',
+        '-o',
+        'LogLevel=ERROR',
     ];
     if (SSH_KEY !== '') {
         $options[] = '-i';
@@ -152,26 +154,58 @@ function pbx_apply_files(array $files, array $beforeReload = []): array
     }
 
     $changed = [];
+    $changedFiles = [];
     foreach ($files as $local => $remote) {
         $localHash = md5_file($local);
         if ($localHash !== false && ($remoteHashes[$remote] ?? '') === strtolower($localHash)) {
             $log[] = basename($remote) . ': değişiklik yok';
             continue;
         }
-        $up = pbx_upload($local, $remote);
-        $log[] = basename($remote) . ': ' . ($up['ok'] ? 'yüklendi' : $up['output']);
-        if (!$up['ok']) {
-            return ['ok' => false, 'output' => implode("\n", $log)];
-        }
         $changed[] = basename($remote);
+        $changedFiles[$local] = $remote;
     }
 
     if (!$changed) {
         return ['ok' => true, 'output' => trim(implode("\n", $log))];
     }
 
-    $commands = array_merge($beforeReload, [
+    $batchLocal = tempnam(sys_get_temp_dir(), 'astera-apply-');
+    if ($batchLocal === false) {
+        return ['ok' => false, 'output' => 'Toplu yükleme dosyası oluşturulamadı'];
+    }
+    $token = bin2hex(random_bytes(6));
+    $batchRemote = '/tmp/astera-apply-' . $token . '.sh';
+    $batchScript = "set -e\numask 022\n";
+    foreach ($changedFiles as $local => $remote) {
+        $contents = file_get_contents($local);
+        if ($contents === false) {
+            @unlink($batchLocal);
+            return ['ok' => false, 'output' => 'Yapılandırma dosyası okunamadı: ' . $local];
+        }
+        $remoteTemp = dirname($remote) . '/.' . basename($remote) . '.' . $token;
+        $batchScript .= 'printf %s ' . escapeshellarg(base64_encode($contents))
+            . ' | base64 -d > ' . escapeshellarg($remoteTemp) . "\n"
+            . 'mv -f ' . escapeshellarg($remoteTemp) . ' ' . escapeshellarg($remote) . "\n";
+    }
+    file_put_contents($batchLocal, $batchScript);
+    $upload = pbx_upload($batchLocal, $batchRemote);
+    @unlink($batchLocal);
+    if (!$upload['ok']) {
+        return ['ok' => false, 'output' => trim(
+            implode("\n", $log) . "\nToplu yükleme başarısız: " . $upload['output']
+        )];
+    }
+    foreach ($changed as $name) {
+        $log[] = $name . ': yüklendi';
+    }
+
+    $installBatch = 'sh ' . escapeshellarg($batchRemote)
+        . '; code=$?; rm -f ' . escapeshellarg($batchRemote)
+        . '; [ "$code" -eq 0 ] || exit "$code"';
+    $commands = array_merge($beforeReload, [$installBatch], [
         'chown asterisk:asterisk /etc/asterisk/pjsip.conf /etc/asterisk/pjsip_endpoints.conf /etc/asterisk/pjsip_trunks.conf /etc/asterisk/extensions.conf /etc/asterisk/queues_web.conf /etc/asterisk/voicemail_web.conf /etc/asterisk/confbridge_web.conf /etc/asterisk/res_parking_web.conf /etc/asterisk/musiconhold_web.conf /etc/asterisk/features_web.conf /etc/asterisk/http.conf 2>/dev/null || true',
+        'chown root:root /etc/dahdi/system.conf /etc/asterisk/chan_dahdi_web.conf 2>/dev/null || true',
+        'chmod 0644 /etc/dahdi/system.conf /etc/asterisk/chan_dahdi_web.conf 2>/dev/null || true',
     ]);
     if (array_intersect($changed, ['extensions.conf'])) {
         $commands[] = "asterisk -rx 'dialplan reload'";
@@ -196,6 +230,16 @@ function pbx_apply_files(array $files, array $beforeReload = []): array
     }
     if (in_array('features_web.conf', $changed, true)) {
         $commands[] = "asterisk -rx 'core reload'";
+    }
+    if (array_intersect($changed, ['system.conf', 'chan_dahdi_web.conf'])) {
+        $commands[] = "if grep -q '^span=' /etc/dahdi/system.conf; then "
+            . "command -v dahdi_cfg >/dev/null || exit 1; "
+            . "modprobe dahdi || exit 1; dahdi_cfg || exit 1; "
+            . "fi";
+        $commands[] = "systemctl restart asterisk || exit 1; "
+            . "attempt=0; while [ ! -S /run/asterisk/asterisk.ctl ] && [ \"\$attempt\" -lt 30 ]; do "
+            . "attempt=\$((attempt + 1)); sleep 1; done; "
+            . "test -S /run/asterisk/asterisk.ctl || exit 1";
     }
     $reload = pbx_ssh(implode("\n", $commands));
 

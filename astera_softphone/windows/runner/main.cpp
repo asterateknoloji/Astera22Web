@@ -38,7 +38,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::SetWindowLongPtr(
       handle, GWL_STYLE,
       ::GetWindowLongPtr(handle, GWL_STYLE) & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX);
-  ::SetWindowPos(handle, HWND_TOPMOST, 0, 0, 0, 0,
+  ::SetWindowPos(handle, HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   window.SetQuitOnClose(true);
 

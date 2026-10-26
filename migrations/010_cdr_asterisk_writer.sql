@@ -48,10 +48,7 @@ BEGIN
         outbound_cnam, linkedid, peeraccount, sequence, dst_cnam, transfered,
         start, answer, call_end
     ) VALUES (
-        COALESCE(
-            NEW.calldate AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Istanbul',
-            timezone('Europe/Istanbul', now())
-        ),
+        COALESCE(NEW.calldate, timezone('Europe/Istanbul', now())),
         NEW.clid, NEW.src, NEW.dst, NEW.dcontext, NEW.channel, NEW.dstchannel,
         NEW.lastapp, NEW.lastdata, NEW.duration, NEW.billsec, NEW.disposition,
         NEW.amaflags, NEW.accountcode, NEW.uniqueid, NEW.userfield, NEW.did,

@@ -80,19 +80,25 @@ class PresenceService {
     required String authUser,
     required String password,
   }) async {
+    // URL tetikleme yetkisi her istekte santralden yeniden alınır. Bir önceki
+    // hesabın/isteğin CRM ayarı hata halinde kesinlikle kullanılmamalıdır.
+    lastUrlTrigger = null;
     if (apiUrl.isEmpty) {
       throw StateError('Meşguliyet API URL gerekli.');
     }
     if (sipUser.isEmpty || password.isEmpty) {
       throw StateError('SIP kayıt bilgileri bulunamadı.');
     }
-    lastUrlTrigger = null;
     final baseUri = Uri.tryParse(apiUrl);
     if (baseUri == null || !baseUri.hasScheme) {
       throw FormatException('Meşguliyet API URL geçersiz.');
     }
     final uri = baseUri.replace(
-      queryParameters: {...baseUri.queryParameters, 'sip_user': sipUser},
+      queryParameters: {
+        ...baseUri.queryParameters,
+        'sip_user': sipUser,
+        '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
+      },
     );
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
     try {
@@ -104,6 +110,7 @@ class PresenceService {
         HttpHeaders.authorizationHeader,
         'Basic $credentials',
       );
+      request.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
       final response = await request.close().timeout(
         const Duration(seconds: 15),
       );
@@ -119,6 +126,13 @@ class PresenceService {
       lastUrlTrigger = trigger is Map<String, dynamic>
           ? CrmUrlTrigger.fromJson(trigger, panelHost: baseUri.host)
           : null;
+      if (json['presence_ok'] == false) {
+        throw HttpException(
+          json['presence_error'] as String? ??
+              'AMI meşguliyet bilgisi alınamadı.',
+          uri: uri,
+        );
+      }
       final extensions = json['extensions'] as List<dynamic>? ?? const [];
       return extensions
           .map(

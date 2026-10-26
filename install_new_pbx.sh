@@ -21,6 +21,7 @@ umask 027
 
 SOURCE_HOST="${SOURCE_HOST:-192.168.181.74}"
 TARGET_HOST="${TARGET_HOST:-192.168.181.87}"
+PROVISION_NETWORK="${PROVISION_NETWORK:-${TARGET_HOST%.*}.0/24}"
 SOURCE_SSH_USER="${SOURCE_SSH_USER:-root}"
 SOURCE_SSH_PORT="${SOURCE_SSH_PORT:-22}"
 SOURCE_SSH_KEY="${SOURCE_SSH_KEY:-}"
@@ -35,6 +36,7 @@ if [[ -z "$PANEL_DOMAIN" && -n "$PBX_NAME" ]]; then
 fi
 ASTERISK_SERIES="${ASTERISK_SERIES:-22}"
 ASTERISK_BUILD_JOBS="${ASTERISK_BUILD_JOBS:-2}"
+POSTGRESQL_MAJOR="${POSTGRESQL_MAJOR:-18}"
 ACTIVATE=0
 FORCE=0
 ASSUME_YES=0
@@ -143,6 +145,8 @@ valid_ipv4 "$TARGET_HOST" || die "Gecersiz hedef IP: $TARGET_HOST"
 [[ "$SOURCE_APP_DIR" == /* && "$TARGET_APP_DIR" == /* ]] || die "Uygulama yollari mutlak olmalidir."
 [[ "$ASTERISK_BUILD_JOBS" =~ ^[1-8]$ ]] \
     || die "ASTERISK_BUILD_JOBS 1 ile 8 arasinda olmalidir."
+[[ "$POSTGRESQL_MAJOR" =~ ^(14|15|16|17|18)$ ]] \
+    || die "POSTGRESQL_MAJOR 14-18 araliginda olmalidir."
 
 if ! ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$TARGET_HOST"; then
     die "Bu makinede hedef IP ($TARGET_HOST) bulunamadi. Betigi yalnizca yeni santralde calistirin."
@@ -161,15 +165,49 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 log "Temel paketler kuruluyor"
+
+# A previous PostgreSQL repository entry may exist without its signing key.
+# Disable only PGDG entries before the bootstrap apt update; they are recreated
+# below with an explicit signed-by key.
+PGDG_SOURCE_BACKUP_DIR="/etc/apt/sources.list.d/astera-pgdg-backup-$(date +%Y%m%d-%H%M%S)"
+install -d -m 0755 "$PGDG_SOURCE_BACKUP_DIR"
+shopt -s nullglob
+for source_file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -f "$source_file" ]] || continue
+    grep -Fq 'apt.postgresql.org' "$source_file" || continue
+    mv "$source_file" "$PGDG_SOURCE_BACKUP_DIR/$(basename "$source_file")"
+done
+shopt -u nullglob
+if [[ -f /etc/apt/sources.list ]] && grep -Fq 'apt.postgresql.org' /etc/apt/sources.list; then
+    cp -a /etc/apt/sources.list "$PGDG_SOURCE_BACKUP_DIR/sources.list"
+    sed -i '\|apt.postgresql.org|s|^|# disabled-by-astera: |' /etc/apt/sources.list
+fi
+
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl gnupg
-install -d -m 0755 /usr/share/postgresql-common/pgdg
-curl -fL --retry 3 \
-    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
-    "${VERSION_CODENAME}" >/etc/apt/sources.list.d/pgdg.list
+install -d -m 0755 /usr/share/keyrings
+curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    | gpg --dearmor --yes -o /usr/share/keyrings/postgresql-pgdg.gpg
+chmod 0644 /usr/share/keyrings/postgresql-pgdg.gpg
+cat >/etc/apt/sources.list.d/pgdg.list <<EOF
+deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main
+EOF
 apt-get update
+
+log "Hedefteki mevcut PostgreSQL paketleri ve bos/yarim cluster temizleniyor"
+mapfile -t installed_postgresql_packages < <(
+    dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'postgresql*' 2>/dev/null \
+        | awk '$2 ~ /^ii/ { print $1 }' \
+        | sort -u
+)
+if ((${#installed_postgresql_packages[@]} > 0)); then
+    systemctl stop postgresql 2>/dev/null || true
+    apt-get purge -y "${installed_postgresql_packages[@]}"
+    apt-get autoremove -y --purge
+fi
+rm -rf /etc/postgresql /var/lib/postgresql
+
+log "PostgreSQL ${POSTGRESQL_MAJOR} kuruluyor"
 apt-get install -y --no-install-recommends \
     ca-certificates curl wget gnupg lsb-release openssl rsync openssh-client openssh-server sshpass \
     build-essential pkg-config git subversion \
@@ -178,8 +216,8 @@ apt-get install -y --no-install-recommends \
     libspeex-dev libspeexdsp-dev libogg-dev libvorbis-dev libgsm1-dev \
     libopus-dev libsrtp2-dev libspandsp-dev libical-dev libneon27-dev \
     unixodbc unixodbc-dev odbc-postgresql libpq-dev \
-    postgresql-16 postgresql-client-16 \
-    nginx certbot python3-certbot-nginx ufw fail2ban \
+    "postgresql-${POSTGRESQL_MAJOR}" "postgresql-client-${POSTGRESQL_MAJOR}" \
+    nginx certbot python3-certbot-nginx ufw fail2ban network-manager \
     iproute2 net-tools iputils-ping dnsutils ethtool traceroute mtr-tiny \
     php-fpm php-cli php-pgsql php-mbstring php-curl php-xml php-zip php-intl php-gd
 
@@ -194,13 +232,39 @@ apt-get update
 apt-get install -y --install-recommends webmin
 systemctl enable --now webmin
 
+log "Ethernet kartlari NetworkManager yonetimine aliniyor"
+install -d -m 0755 /etc/netplan
+cat >/etc/netplan/99-astera-networkmanager.yaml <<'NETPLAN'
+network:
+  version: 2
+  renderer: NetworkManager
+NETPLAN
+chmod 0600 /etc/netplan/99-astera-networkmanager.yaml
+netplan generate
+systemctl enable --now NetworkManager
+netplan apply
+
+log "Hedef SSH servisi hazirlaniyor"
+install -d -m 0755 /run/sshd /etc/ssh/sshd_config.d
+cat >/etc/ssh/sshd_config.d/99-astera-root.conf <<'SSHD_CONFIG'
+PermitRootLogin yes
+PasswordAuthentication yes
+SSHD_CONFIG
+chmod 0644 /etc/ssh/sshd_config.d/99-astera-root.conf
+sshd -t
+systemctl enable --now ssh
+
 SSH_OPTIONS=(
+    -F /dev/null
     -p "$SOURCE_SSH_PORT"
     -o ConnectTimeout=10
     -o ServerAliveInterval=15
     -o ServerAliveCountMax=4
+    -o "UserKnownHostsFile=$STATE_DIR/source_known_hosts"
     -o StrictHostKeyChecking=accept-new
 )
+touch "$STATE_DIR/source_known_hosts"
+chmod 600 "$STATE_DIR/source_known_hosts"
 SSH_USES_PASSWORD=0
 if [[ -n "$SOURCE_SSH_KEY" ]]; then
     [[ -r "$SOURCE_SSH_KEY" ]] || die "SSH anahtari okunamiyor: $SOURCE_SSH_KEY"
@@ -209,14 +273,26 @@ if [[ -n "$SOURCE_SSH_KEY" ]]; then
 elif [[ -n "${SOURCE_SSH_PASSWORD:-}" ]]; then
     export SSHPASS="$SOURCE_SSH_PASSWORD"
     SSH_PREFIX=(sshpass -e)
-    SSH_OPTIONS+=(-o BatchMode=no -o NumberOfPasswordPrompts=1)
+    SSH_OPTIONS+=(
+        -o BatchMode=no
+        -o NumberOfPasswordPrompts=1
+        -o PreferredAuthentications=password
+        -o PubkeyAuthentication=no
+        -o KbdInteractiveAuthentication=no
+    )
     SSH_USES_PASSWORD=1
 elif [[ -t 0 ]]; then
     read -r -s -p "$SOURCE_SSH_USER@$SOURCE_HOST SSH parolasi: " SSHPASS
     echo
     export SSHPASS
     SSH_PREFIX=(sshpass -e)
-    SSH_OPTIONS+=(-o BatchMode=no -o NumberOfPasswordPrompts=1)
+    SSH_OPTIONS+=(
+        -o BatchMode=no
+        -o NumberOfPasswordPrompts=1
+        -o PreferredAuthentications=password
+        -o PubkeyAuthentication=no
+        -o KbdInteractiveAuthentication=no
+    )
     SSH_USES_PASSWORD=1
 else
     die "SOURCE_SSH_KEY veya SOURCE_SSH_PASSWORD gereklidir."
@@ -247,7 +323,9 @@ pull_file_if_exists() {
     fi
 }
 
-if ! remote "true" >/dev/null 2>&1; then
+ssh_error=''
+if ! ssh_error="$(remote "true" 2>&1)"; then
+    printf 'SSH baglanti ayrintisi: %s\n' "${ssh_error:-bilinmeyen hata}" >&2
     if ((SSH_USES_PASSWORD == 0)) || [[ ! -t 0 ]]; then
         die "Kaynak SSH baglantisi reddedildi. Kullanici, anahtar ve SSH ayarlarini kontrol edin."
     fi
@@ -257,10 +335,11 @@ if ! remote "true" >/dev/null 2>&1; then
             "SSH dogrulanamadi. Parolayi tekrar girin ($attempt/3): " SSHPASS
         echo
         export SSHPASS
-        if remote "true" >/dev/null 2>&1; then
+        if ssh_error="$(remote "true" 2>&1)"; then
             ssh_verified=1
             break
         fi
+        printf 'SSH baglanti ayrintisi: %s\n' "${ssh_error:-bilinmeyen hata}" >&2
     done
     ((ssh_verified == 1)) \
         || die "Kaynak SSH kimlik dogrulamasi 3 denemede basarisiz oldu."
@@ -518,18 +597,29 @@ PY
 
 log "PostgreSQL veritabani salt-okunur akis ile aliniyor"
 remote_stream "sudo -n -u postgres pg_dumpall --roles-only" >"$WORK_DIR/roles.sql"
-remote_stream "sudo -n -u postgres pg_dump -Fc --no-owner --no-acl $(printf '%q' "$DB_NAME")" \
-    >"$WORK_DIR/database.dump"
-[[ -s "$WORK_DIR/database.dump" ]] || die "Kaynak veritabani yedegi bos."
+remote_stream "sudo -n -u postgres pg_dump --format=plain --no-owner --no-acl $(printf '%q' "$DB_NAME")" \
+    >"$WORK_DIR/database.sql"
+[[ -s "$WORK_DIR/database.sql" ]] || die "Kaynak veritabani yedegi bos."
 # mktemp creates its directory as root-only. PostgreSQL must be able to
 # traverse the directory and read both streamed backup files during restore.
-chgrp postgres "$WORK_DIR" "$WORK_DIR/roles.sql" "$WORK_DIR/database.dump"
+chgrp postgres "$WORK_DIR" "$WORK_DIR/roles.sql" "$WORK_DIR/database.sql"
 chmod 0750 "$WORK_DIR"
-chmod 0640 "$WORK_DIR/roles.sql" "$WORK_DIR/database.dump"
+chmod 0640 "$WORK_DIR/roles.sql" "$WORK_DIR/database.sql"
 
 log "Sistem ve PostgreSQL saat dilimi Europe/Istanbul olarak ayarlaniyor"
 timedatectl set-timezone Europe/Istanbul
+install -d -m 0755 -o root -g root /etc/systemd/timesyncd.conf.d
+cat >/etc/systemd/timesyncd.conf.d/astera.conf <<'NTP'
+[Time]
+NTP=tr.pool.ntp.org pool.ntp.org time.cloudflare.com
+FallbackNTP=ntp.ubuntu.com time.cloudflare.com
+NTP
+chmod 0644 /etc/systemd/timesyncd.conf.d/astera.conf
+timedatectl set-ntp true
+systemctl enable --now systemd-timesyncd.service
+systemctl restart systemd-timesyncd.service
 systemctl enable --now postgresql
+cd /tmp
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres \
     -c "ALTER SYSTEM SET timezone = 'Europe/Istanbul';"
 systemctl restart postgresql
@@ -556,11 +646,119 @@ if ! sudo -u postgres psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='astera-p
     sudo -u postgres createuser "astera-panel"
 fi
 sudo -u postgres createdb --owner=asterisk "$DB_NAME"
-sudo -u postgres pg_restore --exit-on-error --no-owner --no-acl \
-    --dbname="$DB_NAME" "$WORK_DIR/database.dump"
+sudo -u postgres psql -v ON_ERROR_STOP=1 --dbname="$DB_NAME" \
+    --file="$WORK_DIR/database.sql"
 PRI_MIGRATION="$TARGET_APP_DIR/migrations/011_pri_spans.sql"
 [[ -s "$PRI_MIGRATION" ]] || die "PRI migration dosyasi bulunamadi: $PRI_MIGRATION"
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PRI_MIGRATION"
+OUTBOUND_PERMISSION_MIGRATION="$TARGET_APP_DIR/migrations/022_extension_outbound_permissions.sql"
+[[ -s "$OUTBOUND_PERMISSION_MIGRATION" ]] \
+    || die "Abone dis arama yetkisi migration dosyasi bulunamadi: $OUTBOUND_PERMISSION_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$OUTBOUND_PERMISSION_MIGRATION"
+CRM_DEFAULT_MIGRATION="$TARGET_APP_DIR/migrations/023_extension_crm_default_disabled.sql"
+[[ -s "$CRM_DEFAULT_MIGRATION" ]] \
+    || die "Abone CRM varsayilan migration dosyasi bulunamadi: $CRM_DEFAULT_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$CRM_DEFAULT_MIGRATION"
+PANEL_CONFIG_WRITE_MIGRATION="$TARGET_APP_DIR/migrations/024_panel_pbx_config_write.sql"
+[[ -s "$PANEL_CONFIG_WRITE_MIGRATION" ]] \
+    || die "Panel PBX yazma yetkisi migration dosyasi bulunamadi: $PANEL_CONFIG_WRITE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PANEL_CONFIG_WRITE_MIGRATION"
+NETWORK_SETTINGS_MIGRATION="$TARGET_APP_DIR/migrations/025_network_interface_settings.sql"
+[[ -s "$NETWORK_SETTINGS_MIGRATION" ]] \
+    || die "Ethernet ayarlari migration dosyasi bulunamadi: $NETWORK_SETTINGS_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$NETWORK_SETTINGS_MIGRATION"
+
+log "Hedef makinenin Ethernet bilgileri veritabanina isleniyor"
+mapfile -t TARGET_NETWORK_INTERFACES < <(
+    ip -o -4 address show scope global \
+        | awk '{print $2}' \
+        | sort -u
+)
+for interface in "${TARGET_NETWORK_INTERFACES[@]}"; do
+    [[ "$interface" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,30}$ ]] \
+        || die "Gecersiz hedef Ethernet arayuzu: $interface"
+    ipv4_cidr="$(ip -o -4 address show dev "$interface" scope global | awk 'NR==1 {print $4}')"
+    gateway="$(ip -4 route show default dev "$interface" | awk 'NR==1 {print $3}')"
+    mtu="$(cat "/sys/class/net/$interface/mtu")"
+    connection_uuid="$(nmcli -g GENERAL.CON-UUID device show "$interface" 2>/dev/null | head -n1 || true)"
+    dns_servers="$(
+        resolvectl dns "$interface" 2>/dev/null \
+            | awk -F': ' 'NF > 1 {print $2}' \
+            | tr ' ' '\n' \
+            | awk '/^[0-9]{1,3}(\.[0-9]{1,3}){3}$/' \
+            | paste -sd, - \
+            || true
+    )"
+    method="manual"
+    ip -o -4 address show dev "$interface" scope global | grep -qw dynamic \
+        && method="dhcp"
+    dept_id="$(
+        sudo -u postgres psql -d "$DB_NAME" -Atqc \
+            "SELECT COALESCE(
+                (SELECT dept_id FROM network_interface_settings
+                 WHERE interface_name = '$(printf '%s' "$interface" | sed "s/'/''/g")' LIMIT 1),
+                (SELECT dept_id FROM astera_tenants ORDER BY dept_id LIMIT 1)
+            )"
+    )"
+    [[ -n "$dept_id" ]] || die "Ethernet ayari icin firma bulunamadi: $interface"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+        -v interface_name="$interface" \
+        -v dept_id="$dept_id" \
+        -v method="$method" \
+        -v ipv4_cidr="$ipv4_cidr" \
+        -v gateway="$gateway" \
+        -v dns_servers="$dns_servers" \
+        -v mtu="$mtu" \
+        -v connection_uuid="$connection_uuid" <<'SQL'
+INSERT INTO network_interface_settings (
+    interface_name, dept_id, method, ipv4_cidr, gateway, dns_servers, mtu,
+    connection_uuid, rollback_unit, backup_connection, confirmed,
+    applied_at, updated_at, updated_by
+) VALUES (
+    :'interface_name', :'dept_id', :'method',
+    NULLIF(:'ipv4_cidr', '')::inet,
+    NULLIF(:'gateway', '')::inet,
+    CASE WHEN :'dns_servers' = '' THEN ARRAY[]::inet[]
+         ELSE string_to_array(:'dns_servers', ',')::inet[] END,
+    :'mtu'::integer, :'connection_uuid', '', '', TRUE, now(), now(),
+    'installer-target-network'
+)
+ON CONFLICT (interface_name) DO UPDATE SET
+    method = EXCLUDED.method,
+    ipv4_cidr = EXCLUDED.ipv4_cidr,
+    gateway = EXCLUDED.gateway,
+    dns_servers = EXCLUDED.dns_servers,
+    mtu = EXCLUDED.mtu,
+    connection_uuid = EXCLUDED.connection_uuid,
+    rollback_unit = '',
+    backup_connection = '',
+    confirmed = TRUE,
+    applied_at = now(),
+    updated_at = now(),
+    updated_by = EXCLUDED.updated_by;
+SQL
+done
+
+PANEL_OPERATIONAL_WRITE_MIGRATION="$TARGET_APP_DIR/migrations/026_panel_operational_write_permissions.sql"
+[[ -s "$PANEL_OPERATIONAL_WRITE_MIGRATION" ]] \
+    || die "Panel operasyonel yazma yetkisi migration dosyasi bulunamadi: $PANEL_OPERATIONAL_WRITE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PANEL_OPERATIONAL_WRITE_MIGRATION"
+AUTOPROVISION_MIGRATION="$TARGET_APP_DIR/migrations/027_autoprovision_devices.sql"
+[[ -s "$AUTOPROVISION_MIGRATION" ]] \
+    || die "Autoprovision migration dosyasi bulunamadi: $AUTOPROVISION_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_MIGRATION"
+AUTOPROVISION_ACCOUNT_SLOT_MIGRATION="$TARGET_APP_DIR/migrations/028_autoprovision_account_slot.sql"
+[[ -s "$AUTOPROVISION_ACCOUNT_SLOT_MIGRATION" ]] \
+    || die "Autoprovision hesap yuvasi migration dosyasi bulunamadi: $AUTOPROVISION_ACCOUNT_SLOT_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_ACCOUNT_SLOT_MIGRATION"
+AUTOPROVISION_TEMPLATE_MIGRATION="$TARGET_APP_DIR/migrations/029_autoprovision_templates_and_keys.sql"
+[[ -s "$AUTOPROVISION_TEMPLATE_MIGRATION" ]] \
+    || die "Autoprovision sablon ve tus migration dosyasi bulunamadi: $AUTOPROVISION_TEMPLATE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_TEMPLATE_MIGRATION"
+AUTOPROVISION_SCHEDULE_MIGRATION="$TARGET_APP_DIR/migrations/030_autoprovision_schedule.sql"
+[[ -s "$AUTOPROVISION_SCHEDULE_MIGRATION" ]] \
+    || die "Autoprovision zamanlama migration dosyasi bulunamadi: $AUTOPROVISION_SCHEDULE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_SCHEDULE_MIGRATION"
 CALLCENTER_MIGRATION="$TARGET_APP_DIR/migrations/012_callcenter_core.sql"
 [[ -s "$CALLCENTER_MIGRATION" ]] \
     || die "Callcenter migration dosyasi bulunamadi: $CALLCENTER_MIGRATION"
@@ -577,7 +775,20 @@ for migration in \
     018_callcenter_system_settings.sql \
     019_callcenter_legacy_survey_import.sql \
     020_callcenter_survey_call_unique.sql \
-    021_callcenter_agent_phone_mode.sql; do
+    021_callcenter_agent_phone_mode.sql \
+    031_callcenter_alarms.sql \
+    032_integrations_fidelio_fias.sql \
+    033_integration_remote_syslog.sql \
+    034_system_backups.sql \
+    035_network_static_routes.sql \
+    036_pbx_default_turkish_language.sql \
+    037_ivr_internal_numbers.sql \
+    038_ringgroup_internal_numbers.sql \
+    039_system_ntp_settings.sql \
+    040_system_backup_schedule.sql \
+    041_feature_takeover_settings.sql \
+    042_ami_managers.sql \
+    043_extension_qualify_default.sql; do
     migration_path="$TARGET_APP_DIR/migrations/$migration"
     [[ -s "$migration_path" ]] || die "Migration dosyasi bulunamadi: $migration_path"
     sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$migration_path"
@@ -595,12 +806,16 @@ GRANT SELECT ON astera_tenants, pbx_config_entities, pbx_config_values,
     cdr, queue_log,
     callcenter_agents, callcenter_agent_queue_assignments, callcenter_break_types,
     callcenter_breaks, callcenter_agent_sessions, callcenter_supervisor_users,
-    callcenter_supervisor_queue_scopes, callcenter_supervisor_tenant_scopes
+    callcenter_supervisor_queue_scopes, callcenter_supervisor_tenant_scopes,
+    autoprovision_devices, autoprovision_templates,
+    autoprovision_device_keys, autoprovision_settings
     TO "astera-panel";
 GRANT INSERT, UPDATE, DELETE ON callcenter_agents, callcenter_agent_queue_assignments,
     callcenter_break_types, callcenter_breaks, callcenter_agent_sessions,
     callcenter_supervisor_users, callcenter_supervisor_queue_scopes,
-    callcenter_supervisor_tenant_scopes TO "astera-panel";
+    callcenter_supervisor_tenant_scopes,
+    autoprovision_devices, autoprovision_templates,
+    autoprovision_device_keys, autoprovision_settings TO "astera-panel";
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "astera-panel";
 GRANT UPDATE (last_used_at, updated_at) ON softphone_crm_tokens TO "astera-panel";
 SQL
@@ -608,13 +823,24 @@ SQL
 log "CDR yazici gorunumu ve Asterisk ODBC hedefi hazirlaniyor"
 CDR_WRITER_MIGRATION="$TARGET_APP_DIR/migrations/010_cdr_asterisk_writer.sql"
 CDR_ADAPTIVE_CONF="/etc/asterisk/cdr_adaptive_odbc.conf"
+CDR_CONF="/etc/asterisk/cdr.conf"
 [[ -s "$CDR_WRITER_MIGRATION" ]] \
     || die "CDR yazici migration dosyasi bulunamadi: $CDR_WRITER_MIGRATION"
 [[ -f "$CDR_ADAPTIVE_CONF" ]] \
     || die "Asterisk Adaptive ODBC yapilandirmasi bulunamadi: $CDR_ADAPTIVE_CONF"
+[[ -f "$CDR_CONF" ]] \
+    || die "Asterisk CDR yapilandirmasi bulunamadi: $CDR_CONF"
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
     <"$CDR_WRITER_MIGRATION"
+
+if grep -Eq '^[[:space:]]*usegmtime[[:space:]]*=' "$CDR_CONF"; then
+    sed -i -E \
+        's/^[[:space:]]*usegmtime[[:space:]]*=.*/usegmtime=no/' \
+        "$CDR_CONF"
+else
+    sed -i '/^\[general\]/a usegmtime=no' "$CDR_CONF"
+fi
 
 python3 - "$CDR_ADAPTIVE_CONF" <<'PY'
 import pathlib
@@ -680,6 +906,17 @@ fi
 
 log "Yerel, anahtar tabanli PBX yonetim baglantisi hazirlaniyor"
 install -d -m 0750 -o astera-panel -g astera-panel /etc/astera
+if [[ ! -s /etc/astera/alarm.key ]]; then
+    openssl rand -hex 32 >/etc/astera/alarm.key
+fi
+chown root:astera-panel /etc/astera/alarm.key
+chmod 0640 /etc/astera/alarm.key
+install -d -m 0750 -o astera-panel -g astera-panel /var/lib/astera-alarms
+cat >/etc/sudoers.d/astera-alarms <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/bin/systemctl restart asterisk.service, /usr/bin/systemctl restart postgresql.service, /usr/bin/systemctl restart nginx.service
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-alarms
+visudo -cf /etc/sudoers.d/astera-alarms >/dev/null
 if [[ ! -f /etc/astera/id_ed25519 ]]; then
     sudo -u astera-panel ssh-keygen -q -t ed25519 -N '' \
         -f /etc/astera/id_ed25519 -C "astera-panel@$TARGET_HOST"
@@ -704,6 +941,7 @@ cat >/etc/astera/astera.env <<ENV
 ASTERA_PBX_HOST=$TARGET_HOST
 ASTERA_PBX_SSH_HOST=127.0.0.1
 ASTERA_SSH_USER=root
+ASTERA_SSH_PORT=22
 ASTERA_SSH_PASS=
 ASTERA_SSH_KEY=/etc/astera/id_ed25519
 ASTERA_SSH_KNOWN_HOSTS=/etc/astera/known_hosts
@@ -754,6 +992,7 @@ sed -i \
     "$PHP_POOL"
 
 install -d -m 0750 -o root -g astera-panel /etc/nginx/ssl
+install -d -m 0750 -o root -g www-data /var/lib/astera/provisioning
 if remote "test -f /etc/letsencrypt/live/$(printf '%q' "$PANEL_DOMAIN")/fullchain.pem \
     && test -f /etc/letsencrypt/live/$(printf '%q' "$PANEL_DOMAIN")/privkey.pem"; then
     pull_dir /etc/letsencrypt /etc/letsencrypt
@@ -776,7 +1015,16 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name $PANEL_DOMAIN $TARGET_HOST;
-    return 301 https://\$host\$request_uri;
+    location ^~ /provision/ {
+        alias /var/lib/astera/provisioning/;
+        allow $PROVISION_NETWORK;
+        deny all;
+        default_type application/octet-stream;
+        add_header Cache-Control "no-store";
+    }
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
 server {
@@ -792,6 +1040,14 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options SAMEORIGIN always;
+
+    location ^~ /provision/ {
+        alias /var/lib/astera/provisioning/;
+        allow $PROVISION_NETWORK;
+        deny all;
+        default_type application/octet-stream;
+        add_header Cache-Control "no-store";
+    }
 
     location = /asterisk-ws {
         proxy_pass http://127.0.0.1:8088/ws;
@@ -864,6 +1120,51 @@ fi
 if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-cdr-partitions.timer" ]]; then
     cp "$TARGET_APP_DIR/ops/systemd/astera-cdr-partitions.timer" /etc/systemd/system/
 fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-alarms.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-alarms.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-alarms.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-alarms.timer" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-fidelio-fias.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-fidelio-fias.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-syslog-export.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-syslog-export.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-backup-worker.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-backup-worker.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-network-routes.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-network-routes.service" /etc/systemd/system/
+fi
+install -d -m 0770 -o astera-panel -g astera-panel /var/backups/astera
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/backup_restore_root.sh" /usr/local/sbin/astera-backup-restore
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/backup_dump_root.sh" /usr/local/sbin/astera-backup-dump
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/backup_files_root.sh" /usr/local/sbin/astera-backup-files
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/network_routes_root.sh" /usr/local/sbin/astera-network-routes
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/system_update_root.sh" /usr/local/sbin/astera-system-update
+install -d -m 0750 -o root -g astera-panel /etc/astera
+touch /etc/astera/network-routes.conf
+chown root:astera-panel /etc/astera/network-routes.conf
+chmod 0640 /etc/astera/network-routes.conf
+cat >/etc/sudoers.d/astera-backup <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-backup-restore *
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-backup-dump *
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-backup-files *
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-backup
+visudo -cf /etc/sudoers.d/astera-backup >/dev/null
+cat >/etc/sudoers.d/astera-system-update <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-update *
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-system-update
+visudo -cf /etc/sudoers.d/astera-system-update >/dev/null
 systemctl daemon-reload
 systemctl enable "$PHP_FPM_SERVICE" nginx
 systemctl restart "$PHP_FPM_SERVICE" nginx
@@ -871,6 +1172,16 @@ systemctl restart "$PHP_FPM_SERVICE" nginx
     && systemctl enable --now astera-url-trigger.service
 [[ -f /etc/systemd/system/astera-cdr-partitions.timer ]] \
     && systemctl enable --now astera-cdr-partitions.timer
+[[ -f /etc/systemd/system/astera-alarms.timer ]] \
+    && systemctl enable --now astera-alarms.timer
+[[ -f /etc/systemd/system/astera-fidelio-fias.service ]] \
+    && systemctl enable --now astera-fidelio-fias.service
+[[ -f /etc/systemd/system/astera-syslog-export.service ]] \
+    && systemctl enable --now astera-syslog-export.service
+[[ -f /etc/systemd/system/astera-backup-worker.service ]] \
+    && systemctl enable --now astera-backup-worker.service
+[[ -f /etc/systemd/system/astera-network-routes.service ]] \
+    && systemctl enable --now astera-network-routes.service
 
 if command -v sshd >/dev/null 2>&1; then
     log "SSH 22 ve 45555 portlarini dinleyecek sekilde ayarlaniyor"
@@ -896,6 +1207,16 @@ fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
     log "Etkin UFW icin gerekli portlar aciliyor"
+    for interface in $(ip -o -4 route show default \
+        | awk '{for (i=1; i<=NF; i++) if ($i == "dev") print $(i+1)}' \
+        | sort -u); do
+        ip -o -4 route show proto kernel scope link dev "$interface"
+    done \
+        | awk '$1 ~ /^10\./ || $1 ~ /^192\.168\./ || $1 ~ /^172\.(1[6-9]|2[0-9]|3[01])\./ {print $1}' \
+        | sort -u \
+        | while IFS= read -r network; do
+            ufw allow from "$network" comment astera-local-network
+        done
     ufw allow 22/tcp
     ufw allow 45555/tcp
     ufw allow 80/tcp
@@ -910,11 +1231,35 @@ fi
 log "Kurulum dogrulaniyor"
 php -l "$TARGET_APP_DIR/webphone.php"
 php -l "$TARGET_APP_DIR/api.php"
+php -l "$TARGET_APP_DIR/includes/generator.php"
+php -l "$TARGET_APP_DIR/includes/feature_codes.php"
+php -l "$TARGET_APP_DIR/pages/features.php"
 php -l "$TARGET_APP_DIR/Agent/login.php"
 php -l "$TARGET_APP_DIR/Agent/agent_dashboard_v2.php"
 php -l "$TARGET_APP_DIR/Supervisor/fop_abone.php"
 php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/agentdetay.php"
 php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/anket.php"
+php -l "$TARGET_APP_DIR/includes/alarms.php"
+php -l "$TARGET_APP_DIR/bin/check_alarms.php"
+php -l "$TARGET_APP_DIR/includes/integrations.php"
+php -l "$TARGET_APP_DIR/bin/fidelio_fias_service.php"
+php -l "$TARGET_APP_DIR/pages/integrations.php"
+php -l "$TARGET_APP_DIR/includes/syslog_integration.php"
+php -l "$TARGET_APP_DIR/bin/syslog_export_service.php"
+php -l "$TARGET_APP_DIR/pages/integrations_syslog.php"
+php -l "$TARGET_APP_DIR/includes/backups.php"
+php -l "$TARGET_APP_DIR/bin/backup_worker.php"
+php -l "$TARGET_APP_DIR/pages/backup.php"
+php -l "$TARGET_APP_DIR/backup_download.php"
+php -l "$TARGET_APP_DIR/includes/system_updates.php"
+php -l "$TARGET_APP_DIR/system_updates.php"
+bash -n "$TARGET_APP_DIR/bin/backup_restore_root.sh"
+bash -n "$TARGET_APP_DIR/bin/backup_dump_root.sh"
+bash -n "$TARGET_APP_DIR/bin/backup_files_root.sh"
+bash -n "$TARGET_APP_DIR/bin/network_routes_root.sh"
+bash -n "$TARGET_APP_DIR/bin/system_update_root.sh"
+php -l "$TARGET_APP_DIR/pages/provisioning.php"
+php -l "$TARGET_APP_DIR/includes/provisioning.php"
 sudo -u postgres psql -d "$DB_NAME" -Atqc 'SELECT current_database()' | grep -Fxq "$DB_NAME"
 sudo -u postgres psql -d "$DB_NAME" -Atqc \
     "SELECT version FROM astera_schema_migrations WHERE version='021_callcenter_agent_phone_mode'" \
@@ -932,6 +1277,45 @@ sudo -u postgres psql -d "$DB_NAME" -Atqc \
        'callcenter_settings','callcenter_queue_settings',
        'callcenter_queue_notification_recipients','callcenter_audit_logs'
      )" | grep -Fxq '9'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT count(*) FROM astera_schema_migrations
+     WHERE version IN (
+       '027_autoprovision_devices','028_autoprovision_account_slot',
+       '029_autoprovision_templates_and_keys','030_autoprovision_schedule'
+     )" | grep -Fxq '4'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT bool_and(has_table_privilege(
+       'astera-panel', table_name, 'SELECT,INSERT,UPDATE,DELETE'
+     )) FROM (VALUES
+       ('autoprovision_devices'),('autoprovision_templates'),
+       ('autoprovision_device_keys'),('autoprovision_settings')
+     ) AS provisioning_tables(table_name)" | grep -Fxq 't'
+test -d /var/lib/astera/provisioning
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT count(*) FROM information_schema.tables
+     WHERE table_schema='public' AND table_name IN (
+       'system_backup_settings','system_backup_archives','system_backup_jobs'
+     )" | grep -Fxq '3'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='system_backup_settings'
+       AND column_name='company_name'" | grep -Fxq 'company_name'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT to_regclass('public.network_static_routes')" \
+    | grep -Fxq 'network_static_routes'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT to_regclass('public.feature_takeover_settings')" \
+    | grep -Fxq 'feature_takeover_settings'
+command -v nmcli >/dev/null
+systemctl is-active --quiet NetworkManager
+nmcli -t -f TYPE device status | grep -Fxq 'ethernet'
+test -x /usr/local/sbin/astera-backup-restore
+test -x /usr/local/sbin/astera-backup-dump
+test -x /usr/local/sbin/astera-backup-files
+systemctl is-active --quiet astera-backup-worker.service
+test -x /usr/local/sbin/astera-network-routes
+systemctl is-active --quiet astera-network-routes.service
+test -x /usr/local/sbin/astera-system-update
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
     "https://$PANEL_DOMAIN/webphone.php" >/dev/null
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
@@ -1019,7 +1403,7 @@ INSERT INTO cdr_asterisk_writer (
     calldate, clid, src, dst, dcontext, channel, lastapp, duration,
     billsec, disposition, amaflags, accountcode, uniqueid, linkedid
 ) VALUES (
-    timezone('UTC', now()), '"Kurulum CDR Test" <999>', '999', '998',
+    timezone('Europe/Istanbul', now()), '"Kurulum CDR Test" <999>', '999', '998',
     'from-genel', 'PJSIP/999-install-test', 'Dial', 1,
     0, 'NO ANSWER', 3, '', 'astera-install-cdr-test', 'astera-install-cdr-test'
 );

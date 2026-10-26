@@ -1,5 +1,8 @@
 <?php
 $webphoneMode = !empty($webphoneMode);
+$agentDashboardMode = !empty($agentDashboardMode);
+$assetPrefix = isset($assetPrefix) ? (string) $assetPrefix : 'assets/';
+$rootPrefix = isset($rootPrefix) ? (string) $rootPrefix : '';
 if ($webphoneMode && !empty($webphoneExtension) && is_array($webphoneExtension)) {
     $rows = [$webphoneExtension];
     $pre = (string) ($webphoneExtension['exten'] ?? '');
@@ -24,7 +27,7 @@ $keys = [
 ];
 ?>
 <?php if (!$rtcRows): ?>
-    <p class="banner">Önce <a href="index.php?p=extensions">Dahili</a> sayfasında bir aboneyi düzenleyip <strong>WebRTC</strong> kutusunu işaretleyin.</p>
+    <p class="banner">Önce <a href="<?= e($rootPrefix) ?>index.php?p=extensions">Dahili</a> sayfasında bir aboneyi düzenleyip <strong>WebRTC</strong> kutusunu işaretleyin.</p>
 <?php endif; ?>
 
 <div class="sip-wrap">
@@ -130,14 +133,15 @@ $keys = [
         <audio id="rtcRemote" autoplay></audio>
     </div>
     <?php if ($webphoneMode): ?>
-        <div class="webphone-phone-controls">
+        <div class="webphone-phone-controls <?= !$agentDashboardMode ? 'with-session' : '' ?>">
             <button class="btn primary" type="button" id="rtcConnect" <?= $rtcRows ? '' : 'disabled' ?>>Bağlan</button>
             <button class="btn" type="button" id="rtcDisconnect" disabled>Kopar</button>
+            <?php if (!$agentDashboardMode): ?>
             <form method="post">
                 <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
                 <button class="btn" type="submit" name="logout" value="1">Çıkış yap</button>
             </form>
-            <a class="btn" href="crm_popup.php" target="astera-crm" rel="opener">Müşteri Kartları</a>
+            <?php endif; ?>
         </div>
         <p class="webphone-phone-note">
             AA = gelen çağrıyı otomatik aç. DND = rahatsız etme (*78 / *79).
@@ -146,6 +150,7 @@ $keys = [
     <?php endif; ?>
     </div>
 
+    <?php if (!$agentDashboardMode): ?>
     <div class="sip-help">
         <?php if ($webphoneMode): ?>
             <div class="blf-board-head">
@@ -196,6 +201,7 @@ $keys = [
             <p class="tiny muted">AA = gelen çağrıyı otomatik aç. DND = rahatsız etme (*78 / *79). Görüşmede tuşlar DTMF gönderir.</p>
         <?php endif; ?>
     </div>
+    <?php endif; ?>
 </div>
 
 <button type="button" id="rtcCall" hidden>Ara</button>
@@ -216,6 +222,6 @@ window.ASTERA.extIndex = <?= json_encode(array_map(static fn($r) => [
     'name' => (string) ($r['name'] ?? ''),
 ], $contacts), JSON_UNESCAPED_UNICODE) ?>;
 </script>
-<script src="assets/js/jssip.min.js?v=312"></script>
-<script src="assets/js/webrtc.js?v=28"></script>
+<script src="<?= e($assetPrefix) ?>js/jssip.min.js?v=312"></script>
+<script src="<?= e($assetPrefix) ?>js/webrtc.js?v=32"></script>
 <script>document.addEventListener('DOMContentLoaded', () => AsteraRtc.init());</script>

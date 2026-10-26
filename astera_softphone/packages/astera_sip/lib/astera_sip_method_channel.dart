@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'src/call_event.dart';
 import 'src/registration_event.dart';
 import 'src/sip_account.dart';
+import 'src/audio_device.dart';
 import 'astera_sip_platform_interface.dart';
 
 /// An implementation of [AsteraSipPlatform] that uses method channels.
@@ -120,6 +121,38 @@ class MethodChannelAsteraSip extends AsteraSipPlatform {
   @override
   Future<void> setSpeakerLevel(double level) => methodChannel
       .invokeMethod<void>('setSpeakerLevel', <String, Object>{'level': level});
+
+  @override
+  Future<AudioDeviceState> getAudioDevices() async {
+    final result = await methodChannel.invokeMapMethod<Object?, Object?>(
+      'getAudioDevices',
+    );
+    if (result == null) {
+      throw StateError('Ses aygıtları alınamadı.');
+    }
+    return AudioDeviceState.fromChannel(result);
+  }
+
+  @override
+  Future<void> setAudioDevices({
+    required int captureDeviceId,
+    required int playbackDeviceId,
+  }) => methodChannel.invokeMethod<void>('setAudioDevices', <String, Object>{
+    'captureDeviceId': captureDeviceId,
+    'playbackDeviceId': playbackDeviceId,
+  });
+
+  @override
+  Future<void> setRingtoneStyle(int style) => methodChannel.invokeMethod<void>(
+    'setRingtoneStyle',
+    <String, Object>{'style': style},
+  );
+
+  @override
+  Future<void> setRingtoneFile(String path) => methodChannel.invokeMethod<void>(
+    'setRingtoneFile',
+    <String, Object>{'path': path},
+  );
 
   @override
   Future<void> dispose() async {

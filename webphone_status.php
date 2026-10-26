@@ -1,19 +1,35 @@
 <?php
 declare(strict_types=1);
 
+$agentScope = (string) ($_GET['scope'] ?? '') === 'agent';
+if ($agentScope) {
+    session_name('ASTERA_CALLCENTER_AGENT');
+}
 require_once __DIR__ . '/includes/bootstrap.php';
 
 header('Cache-Control: no-store, private');
 
-$extensionId = (string) ($_SESSION['webphone_extension_id'] ?? '');
-if ($extensionId === '') {
-    json_out(['ok' => false, 'error' => 'WebPhone oturumu gerekli'], 401);
+$extension = null;
+if ($agentScope) {
+    $agent = (array) ($_SESSION['callcenter_agent'] ?? []);
+    $agentDept = (string) ($agent['dept_id'] ?? '');
+    $agentExtension = (string) ($agent['extension'] ?? '');
+    if ($agentDept !== '' && $agentExtension !== '') {
+        $extension = find_ext($agentDept, $agentExtension);
+    }
+} else {
+    $extensionId = (string) ($_SESSION['webphone_extension_id'] ?? '');
+    if ($extensionId !== '') {
+        $extension = find_by('extensions', 'id', $extensionId);
+    }
 }
-$extension = find_by('extensions', 'id', $extensionId);
 if (!$extension || empty($extension['webrtc'])) {
-    unset($_SESSION['webphone_extension_id']);
+    if (!$agentScope) {
+        unset($_SESSION['webphone_extension_id']);
+    }
     json_out(['ok' => false, 'error' => 'WebPhone erişimi kapalı'], 401);
 }
+$extensionId = (string) ($extension['id'] ?? '');
 $dept = ast_sanitize_id((string) ($extension['dept'] ?? ''));
 if ($dept === '') {
     json_out(['ok' => false, 'error' => 'Firma bilgisi bulunamadı'], 422);
@@ -115,10 +131,14 @@ function webphone_recent_calls(array $extension, string $dept): array
         $recordedForExtension = str_contains($recording, '-dahili_' . $exten . '-');
         $direction = '';
         $number = '';
-        if ($ownChannel && strlen($dst) > 6) {
+        if ($ownChannel && $dst !== '' && $dst !== $exten) {
             $direction = 'outgoing';
             $number = $dst;
-        } elseif (($ownDestination || $recordedForExtension) && strlen($src) > 6) {
+        } elseif (
+            ($ownDestination || $recordedForExtension)
+            && $src !== ''
+            && $src !== $exten
+        ) {
             $direction = 'incoming';
             $number = $src;
         }

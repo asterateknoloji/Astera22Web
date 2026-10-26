@@ -53,6 +53,8 @@ function webphone_rate_state(string $ip, bool $failed = false, bool $reset = fal
 }
 
 $error = '';
+$success = '';
+$passwordModalOpen = false;
 $clientIp = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['logout'])) {
@@ -107,6 +109,43 @@ if ($webphoneId !== '') {
         unset($_SESSION['webphone_extension_id']);
     }
 }
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password']) && $webphoneExtension) {
+    $passwordModalOpen = true;
+    $currentPassword = trim((string) ($_POST['current_password'] ?? ''));
+    $newPassword = trim((string) ($_POST['new_password'] ?? ''));
+    $newPasswordConfirm = trim((string) ($_POST['new_password_confirm'] ?? ''));
+    $storedPassword = (string) ($webphoneExtension['vm_pin'] ?? '');
+
+    if (!csrf_ok()) {
+        $error = 'Oturum doğrulaması başarısız.';
+    } elseif ($storedPassword === '' || !hash_equals($storedPassword, $currentPassword)) {
+        $error = 'Mevcut şifre hatalı.';
+    } elseif (!preg_match('/^\d{4,12}$/', $newPassword)) {
+        $error = 'Yeni şifre 4-12 rakamdan oluşmalıdır.';
+    } elseif (!hash_equals($newPassword, $newPasswordConfirm)) {
+        $error = 'Yeni şifre tekrarı eşleşmiyor.';
+    } elseif (hash_equals($storedPassword, $newPassword)) {
+        $error = 'Yeni şifre mevcut şifreden farklı olmalıdır.';
+    } else {
+        try {
+            $extensionId = (string) ($webphoneExtension['id'] ?? '');
+            $dept = (string) ($webphoneExtension['dept'] ?? '');
+            $exten = (string) ($webphoneExtension['exten'] ?? '');
+            pbx_extension_vm_pin_update(
+                $extensionId,
+                $dept,
+                $newPassword,
+                'WebPhone ' . $exten
+            );
+            store_mark_pending($dept, 'webphone_pin');
+            $webphoneExtension['vm_pin'] = $newPassword;
+            $success = 'WebPhone şifreniz güncellendi.';
+            $passwordModalOpen = false;
+        } catch (Throwable $exception) {
+            $error = 'Şifre güncellenemedi: ' . $exception->getMessage();
+        }
+    }
+}
 if ($webphoneExtension) {
     try {
         crm_local_caller_names((string) ($webphoneExtension['dept'] ?? ''));
@@ -122,7 +161,7 @@ $pendingDial = preg_replace('/[^0-9+*#]/', '', substr((string) ($_GET['dial'] ??
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASTERA · WebPhone</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=42">
+    <link rel="stylesheet" href="assets/css/app.css?v=52">
 </head>
 <body class="login-body webphone-body">
 <?php if (!$webphoneExtension): ?>
@@ -153,12 +192,45 @@ $pendingDial = preg_replace('/[^0-9+*#]/', '', substr((string) ($_GET['dial'] ??
                 <strong>ASTERA WebPhone</strong>
                 <span><?= e(($webphoneExtension['name'] ?? '') . ' · ' . ($webphoneExtension['exten'] ?? '')) ?></span>
             </div>
+            <button class="btn" type="button" id="openWebphonePassword">Şifre değiştir</button>
         </header>
+        <?php if ($error !== ''): ?>
+            <div class="alert bad"><?= e($error) ?></div>
+        <?php elseif ($success !== ''): ?>
+            <div class="alert good"><?= e($success) ?></div>
+        <?php endif; ?>
         <?php
         $webphoneMode = true;
         include __DIR__ . '/pages/webrtc.php';
         ?>
     </main>
+    <div class="modal" id="webphonePasswordModal" <?= $passwordModalOpen ? '' : 'hidden' ?>>
+        <article class="modal-card" style="width:min(440px,100%)">
+            <h3>WebPhone şifresini değiştir</h3>
+            <form method="post" autocomplete="off">
+                <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+                <label>Mevcut şifre
+                    <input type="password" name="current_password" inputmode="numeric"
+                           autocomplete="current-password" required autofocus>
+                </label>
+                <label>Yeni şifre
+                    <input type="password" name="new_password" inputmode="numeric"
+                           pattern="[0-9]{4,12}" minlength="4" maxlength="12"
+                           autocomplete="new-password" required>
+                </label>
+                <label>Yeni şifre tekrar
+                    <input type="password" name="new_password_confirm" inputmode="numeric"
+                           pattern="[0-9]{4,12}" minlength="4" maxlength="12"
+                           autocomplete="new-password" required>
+                </label>
+                <p class="tiny muted">Şifre 4-12 rakamdan oluşmalıdır.</p>
+                <div class="modal-actions">
+                    <button class="btn" type="button" id="closeWebphonePassword">Vazgeç</button>
+                    <button class="btn primary" type="submit" name="change_password" value="1">Şifreyi güncelle</button>
+                </div>
+            </form>
+        </article>
+    </div>
     <div id="toast" class="toast" hidden></div>
     <script>
     window.name = 'astera-webphone';
@@ -184,6 +256,19 @@ $pendingDial = preg_replace('/[^0-9+*#]/', '', substr((string) ($_GET['dial'] ??
             this._t = setTimeout(() => { element.hidden = true; }, 4200);
         }
     };
+    (() => {
+        const modal = document.getElementById('webphonePasswordModal');
+        document.getElementById('openWebphonePassword')?.addEventListener('click', () => {
+            modal.hidden = false;
+            modal.querySelector('input[name="current_password"]')?.focus();
+        });
+        document.getElementById('closeWebphonePassword')?.addEventListener('click', () => {
+            modal.hidden = true;
+        });
+        modal?.addEventListener('click', (event) => {
+            if (event.target === modal) modal.hidden = true;
+        });
+    })();
     </script>
 <?php endif; ?>
 </body>

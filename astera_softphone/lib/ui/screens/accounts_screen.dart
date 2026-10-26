@@ -50,6 +50,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
   bool _presenceLoading = false;
   final Set<String> _crmTriggerSeen = {};
   final Set<String> _crmTriggerPending = {};
+  bool _audioWarningShown = false;
 
   @override
   void initState() {
@@ -63,6 +64,22 @@ class _AccountsScreenState extends State<AccountsScreen> {
     try {
       await widget.registration.initialize();
       await widget.repository.initialize();
+      widget.registration.configureAutoAnswer(
+        enabled: widget.repository.autoAnswerEnabled,
+        ringCount: widget.repository.autoAnswerRingCount,
+      );
+      var ringtoneStyle = widget.repository.ringtoneStyle;
+      final ringtoneFilePath = widget.repository.ringtoneFilePath;
+      if (ringtoneStyle == 3 && ringtoneFilePath != null) {
+        try {
+          await widget.registration.setRingtoneFile(ringtoneFilePath);
+        } catch (_) {
+          ringtoneStyle = 0;
+          await widget.repository.setRingtoneStyle(ringtoneStyle);
+        }
+      }
+      await widget.registration.setRingtoneStyle(ringtoneStyle);
+      await _restoreAudioDevices();
       final activeId = widget.repository.activeAccountId;
       if (activeId != null) {
         final matches = widget.repository.accounts.where(
@@ -112,6 +129,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           children: [
                             Text(
                               'ASTERA',
+                              maxLines: 1,
                               style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 22,
@@ -120,7 +138,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
                               ),
                             ),
                             Text(
-                              'SOFTPHONE  •  SIP ACCOUNTS',
+                              'SOFTPHONE  •  SIP HESAPLARI',
+                              maxLines: 1,
                               style: TextStyle(
                                 color: Color(0xFF9FB1CA),
                                 fontSize: 10,
@@ -130,54 +149,17 @@ class _AccountsScreenState extends State<AccountsScreen> {
                           ],
                         ),
                       ),
-                      FilledButton.icon(
-                        onPressed: _loading ? null : () => _openEditor(),
-                        icon: const Icon(Icons.person_add_alt_1, size: 15),
-                        label: const Text('Hesap Ekle'),
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(94, 32),
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          textStyle: const TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
+                      TextButton.icon(
+                        onPressed: _openWebsite,
+                        icon: const Icon(Icons.language, size: 14),
+                        label: const Text('Web sitesi: www.astera.com.tr'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF61D7A5),
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 6,
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      FilledButton.icon(
-                        onPressed: _loading ? null : _openCallHistory,
-                        icon: const Icon(Icons.history, size: 15),
-                        label: const Text('Aramalar'),
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(82, 32),
-                          padding: const EdgeInsets.symmetric(horizontal: 7),
-                          backgroundColor: const Color(0xFFF4B740),
-                          foregroundColor: const Color(0xFF182437),
-                          textStyle: const TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      FilledButton.icon(
-                        onPressed: _loading || _presenceLoading
-                            ? null
-                            : _togglePresenceBoard,
-                        icon: _presenceLoading
-                            ? const SizedBox.square(
-                                dimension: 13,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.groups_outlined, size: 15),
-                        label: const Text('Meşguliyet'),
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(88, 32),
-                          padding: const EdgeInsets.symmetric(horizontal: 7),
-                          backgroundColor: const Color(0xFF35C98A),
-                          foregroundColor: const Color(0xFF10251D),
                           textStyle: const TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w700,
@@ -185,6 +167,100 @@ class _AccountsScreenState extends State<AccountsScreen> {
                         ),
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 34,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _loading ? null : () => _openEditor(),
+                            icon: const Icon(Icons.person_add_alt_1, size: 15),
+                            label: const Text('Hesap Ekle'),
+                            style: FilledButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                              textStyle: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _loading ? null : _openCallHistory,
+                            icon: const Icon(Icons.history, size: 15),
+                            label: const Text('Aramalar'),
+                            style: FilledButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                              backgroundColor: const Color(0xFFF4B740),
+                              foregroundColor: const Color(0xFF182437),
+                              textStyle: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _loading || _presenceLoading
+                                ? null
+                                : _togglePresenceBoard,
+                            icon: _presenceLoading
+                                ? const SizedBox.square(
+                                    dimension: 13,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.groups_outlined, size: 15),
+                            label: const Text('Meşguliyet'),
+                            style: FilledButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                              backgroundColor: const Color(0xFF35C98A),
+                              foregroundColor: const Color(0xFF10251D),
+                              textStyle: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _loading ? null : _openAudioSettings,
+                            icon: const Icon(Icons.settings_outlined, size: 15),
+                            label: const Text('Ayarlar'),
+                            style: FilledButton.styleFrom(
+                              minimumSize: Size.zero,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                              backgroundColor: const Color(0xFF607086),
+                              foregroundColor: Colors.white,
+                              textStyle: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 8),
                   _RegistrationStatus(
@@ -325,6 +401,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
                   decoration: InputDecoration(
                     hintText: 'Numara girin',
                     labelText: _incomingCallerName ?? _outboundCrmName,
+                    floatingLabelBehavior:
+                        (_incomingCallerName ?? _outboundCrmName) == null
+                        ? FloatingLabelBehavior.auto
+                        : FloatingLabelBehavior.always,
                     prefixIcon: const Icon(Icons.dialpad),
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(vertical: 10),
@@ -432,8 +512,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
           const SizedBox(height: 8),
           AnimatedBuilder(
             animation: widget.registration,
-            builder: (context, _) =>
-                _BehaviorBar(controller: widget.registration),
+            builder: (context, _) => _BehaviorBar(
+              controller: widget.registration,
+              onAutoAnswerChanged: _setAutoAnswer,
+              onAutoAnswerRingCountChanged: _setAutoAnswerRingCount,
+            ),
           ),
         ],
       ),
@@ -528,6 +611,15 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   void _syncIncomingNumber() {
     final event = widget.registration.callEvent;
+    if (event.state == CallState.failed &&
+        _looksLikeAudioDeviceError(event.detail)) {
+      unawaited(
+        _showSystemAudioWarning(
+          'Arama için mikrofon veya hoparlör/kulaklık kullanılamıyor.\n\n'
+          'Aygıtı bağlayın ve Ayarlar bölümünden yeniden seçin.',
+        ),
+      );
+    }
     final active =
         event.state == CallState.incoming ||
         event.state == CallState.calling ||
@@ -549,15 +641,15 @@ class _AccountsScreenState extends State<AccountsScreen> {
       final number = match?.group(1) ?? event.remoteUri;
       unawaited(_openCrmTrigger('ring', number));
       final callerName = _callerNameFromUri(event.remoteUri, number);
-      if (_incomingCallerName != callerName && mounted) {
-        setState(() => _incomingCallerName = callerName);
-      }
-      _addCallHistory(number, _CallDirection.incoming);
       _dial.value = TextEditingValue(
         text: number,
         selection: TextSelection.collapsed(offset: number.length),
       );
       _lastDialValue = number;
+      if (_incomingCallerName != callerName && mounted) {
+        setState(() => _incomingCallerName = callerName);
+      }
+      _addCallHistory(number, _CallDirection.incoming);
     } else if (event.state == CallState.connected &&
         _displayedIncomingUri != null) {
       final match = RegExp(r'sip:([^@;>]+)').firstMatch(_displayedIncomingUri!);
@@ -609,7 +701,13 @@ class _AccountsScreenState extends State<AccountsScreen> {
     }
 
     try {
-      await _loadPresence();
+      try {
+        await _loadPresence();
+      } catch (_) {
+        // CRM politikası santralden doğrulanamıyorsa güvenli biçimde kapalı
+        // kabul edilir. AMI hatasında politika yine de alınmış olabilir.
+        if (_presenceService.lastUrlTrigger == null) return;
+      }
       final config = _presenceService.lastUrlTrigger;
       if (config == null || config.urlTemplate.isEmpty) return;
       if (digits.length < config.minDigits) return;
@@ -1103,10 +1201,728 @@ class _AccountsScreenState extends State<AccountsScreen> {
     if (mounted) setState(() {});
   }
 
+  void _setAutoAnswer(bool enabled) {
+    widget.registration.setAutoAnswer(enabled);
+    unawaited(
+      widget.repository
+          .setAutoAnswerSettings(
+            enabled: enabled,
+            ringCount: widget.registration.autoAnswerRingCount,
+          )
+          .catchError(_showError),
+    );
+  }
+
+  void _setAutoAnswerRingCount(int ringCount) {
+    widget.registration.setAutoAnswerRingCount(ringCount);
+    unawaited(
+      widget.repository
+          .setAutoAnswerSettings(
+            enabled: widget.registration.autoAnswer,
+            ringCount: ringCount,
+          )
+          .catchError(_showError),
+    );
+  }
+
+  Future<void> _restoreAudioDevices() async {
+    final captureKey = widget.repository.captureDeviceKey;
+    final playbackKey = widget.repository.playbackDeviceKey;
+    AudioDeviceState state;
+    try {
+      state = await widget.registration.getAudioDevices();
+    } catch (_) {
+      await _showSystemAudioWarning(
+        'Windows ses aygıtları okunamadı.\n\n'
+        'Mikrofon ve hoparlör/kulaklık bağlantısını kontrol edin, '
+        'ardından Ayarlar bölümünden yeniden seçin.',
+      );
+      return;
+    }
+    if (!_hasRequiredAudioDevices(state)) {
+      await _showMissingAudioDeviceWarning(state);
+      return;
+    }
+    _audioWarningShown = false;
+    if (captureKey == null && playbackKey == null) return;
+
+    AudioDevice? capture;
+    AudioDevice? playback;
+    for (final device in state.devices) {
+      if (device.supportsInput && device.key == captureKey) {
+        capture = device;
+      }
+      if (device.supportsOutput && device.key == playbackKey) {
+        playback = device;
+      }
+    }
+    for (final device in state.devices) {
+      if (capture == null &&
+          device.supportsInput &&
+          device.id == state.captureDeviceId) {
+        capture = device;
+      }
+      if (playback == null &&
+          device.supportsOutput &&
+          device.id == state.playbackDeviceId) {
+        playback = device;
+      }
+    }
+    if (capture == null || playback == null) return;
+    await widget.registration.setAudioDevices(
+      captureDeviceId: capture.id,
+      playbackDeviceId: playback.id,
+    );
+  }
+
+  Future<void> _openWebsite() async {
+    try {
+      await _windowChannel.invokeMethod<void>(
+        'openExternalUrl',
+        'https://www.astera.com.tr',
+      );
+    } catch (error) {
+      _showError('Web sitesi açılamadı: $error');
+    }
+  }
+
+  Future<void> _openAudioSettings() async {
+    try {
+      final state = await widget.registration.getAudioDevices();
+      if (!mounted) return;
+      if (!_hasRequiredAudioDevices(state)) {
+        await _showMissingAudioDeviceWarning(state);
+      } else {
+        _audioWarningShown = false;
+      }
+      if (!mounted) return;
+      final result = await showDialog<_AudioSettingsResult>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _AudioSettingsDialog(
+          state: state,
+          controller: widget.registration,
+          repository: widget.repository,
+          ringtoneStyle: widget.repository.ringtoneStyle,
+          ringtoneFilePath: widget.repository.ringtoneFilePath,
+        ),
+      );
+      if (result == null) return;
+      await widget.registration.setAudioDevices(
+        captureDeviceId: result.capture.id,
+        playbackDeviceId: result.playback.id,
+      );
+      await widget.repository.setAudioDeviceKeys(
+        captureDeviceKey: result.capture.key,
+        playbackDeviceKey: result.playback.key,
+      );
+      if (result.ringtoneStyle == 3) {
+        final selectedPath = result.ringtoneFilePath;
+        if (selectedPath == null) {
+          throw const FormatException('Zil sesi seçilmedi.');
+        }
+        await widget.repository.selectRingtoneFile(selectedPath);
+        await widget.registration.setRingtoneFile(selectedPath);
+      }
+      await widget.registration.setRingtoneStyle(result.ringtoneStyle);
+      await widget.repository.setRingtoneStyle(result.ringtoneStyle);
+      _audioWarningShown = false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ses aygıtları kaydedildi.')),
+        );
+      }
+    } catch (error) {
+      _showError('Ayarlar kaydedilemedi: $error');
+    }
+  }
+
   void _showError(Object error) {
+    if (_looksLikeAudioDeviceError(error)) {
+      unawaited(
+        _showSystemAudioWarning(
+          'Arama için mikrofon veya hoparlör/kulaklık kullanılamıyor.\n\n'
+          'Aygıtı bağlayın ve Ayarlar > Ses Aygıtları bölümünden seçin.',
+        ),
+      );
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(error.toString())));
+  }
+
+  bool _hasRequiredAudioDevices(AudioDeviceState state) =>
+      state.devices.any((device) => device.supportsInput) &&
+      state.devices.any((device) => device.supportsOutput);
+
+  Future<void> _showMissingAudioDeviceWarning(AudioDeviceState state) {
+    final hasInput = state.devices.any((device) => device.supportsInput);
+    final hasOutput = state.devices.any((device) => device.supportsOutput);
+    final missing = [
+      if (!hasInput) 'mikrofon',
+      if (!hasOutput) 'hoparlör/kulaklık',
+    ].join(' ve ');
+    return _showSystemAudioWarning(
+      '${missing[0].toUpperCase()}${missing.substring(1)} bulunamadı.\n\n'
+      'Aygıtı bağlayın ve Ayarlar bölümünden yeniden seçin.',
+    );
+  }
+
+  Future<void> _showSystemAudioWarning(String message) async {
+    if (_audioWarningShown) return;
+    _audioWarningShown = true;
+    try {
+      await _windowChannel.invokeMethod<void>('showSystemWarning', message);
+    } catch (_) {
+      // Eski Windows runner ile de alt bildirim çalışmaya devam eder.
+    }
+  }
+
+  static bool _looksLikeAudioDeviceError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('audio') ||
+        text.contains('pjmedia') ||
+        text.contains('microphone') ||
+        text.contains('speaker') ||
+        text.contains('ses aygıt') ||
+        text.contains('capture device') ||
+        text.contains('playback device');
+  }
+}
+
+class _AudioSettingsResult {
+  const _AudioSettingsResult({
+    required this.capture,
+    required this.playback,
+    required this.ringtoneStyle,
+    required this.ringtoneFilePath,
+  });
+
+  final AudioDevice capture;
+  final AudioDevice playback;
+  final int ringtoneStyle;
+  final String? ringtoneFilePath;
+}
+
+class _AudioSettingsDialog extends StatefulWidget {
+  const _AudioSettingsDialog({
+    required this.state,
+    required this.controller,
+    required this.repository,
+    required this.ringtoneStyle,
+    required this.ringtoneFilePath,
+  });
+
+  final AudioDeviceState state;
+  final RegistrationController controller;
+  final AccountRepository repository;
+  final int ringtoneStyle;
+  final String? ringtoneFilePath;
+
+  @override
+  State<_AudioSettingsDialog> createState() => _AudioSettingsDialogState();
+}
+
+class _AudioSettingsDialogState extends State<_AudioSettingsDialog> {
+  static const _windowChannel = MethodChannel('tr.com.astera/window');
+  late List<AudioDevice> _inputs;
+  late List<AudioDevice> _outputs;
+  int? _captureId;
+  int? _playbackId;
+  late int _ringtoneStyle;
+  String? _ringtoneFilePath;
+  late List<CustomRingtone> _customRingtones;
+  String? _ringtoneError;
+  Timer? _refreshTimer;
+  bool _refreshing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _inputs = widget.state.devices
+        .where((device) => device.supportsInput)
+        .toList(growable: false);
+    _outputs = widget.state.devices
+        .where((device) => device.supportsOutput)
+        .toList(growable: false);
+    _captureId =
+        _inputs.any((device) => device.id == widget.state.captureDeviceId)
+        ? widget.state.captureDeviceId
+        : (_inputs.isEmpty ? null : _inputs.first.id);
+    _playbackId =
+        _outputs.any((device) => device.id == widget.state.playbackDeviceId)
+        ? widget.state.playbackDeviceId
+        : (_outputs.isEmpty ? null : _outputs.first.id);
+    _ringtoneStyle = widget.ringtoneStyle;
+    _ringtoneFilePath = widget.ringtoneFilePath;
+    _customRingtones = widget.repository.customRingtones;
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_refreshDevices()),
+    );
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = _captureId != null && _playbackId != null;
+    return AlertDialog(
+      insetPadding: const EdgeInsets.all(8),
+      contentPadding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+      title: Row(
+        children: [
+          const Icon(Icons.settings_outlined, size: 20),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text('Ayarlar', style: TextStyle(fontSize: 16)),
+          ),
+          IconButton(
+            tooltip: 'Ses aygıtlarını yenile',
+            onPressed: _refreshing ? null : _refreshDevices,
+            icon: _refreshing
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'SES AYGITLARI',
+              style: TextStyle(
+                color: Color(0xFF607086),
+                fontSize: 9,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.8,
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              key: ValueKey('capture:$_captureId:${_inputs.length}'),
+              initialValue: _captureId,
+              isExpanded: true,
+              style: const TextStyle(fontSize: 10, color: Color(0xFF182437)),
+              decoration: const InputDecoration(
+                labelText: 'Mikrofon',
+                labelStyle: TextStyle(fontSize: 10),
+                prefixIcon: Icon(Icons.mic_none_outlined, size: 18),
+                prefixIconConstraints: BoxConstraints(minWidth: 34),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 10,
+                ),
+                isDense: true,
+              ),
+              items: _inputs
+                  .map(
+                    (device) => DropdownMenuItem(
+                      value: device.id,
+                      child: Text(
+                        _deviceLabel(device),
+                        style: const TextStyle(fontSize: 10),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) => setState(() => _captureId = value),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              key: ValueKey('playback:$_playbackId:${_outputs.length}'),
+              initialValue: _playbackId,
+              isExpanded: true,
+              style: const TextStyle(fontSize: 10, color: Color(0xFF182437)),
+              decoration: const InputDecoration(
+                labelText: 'Hoparlör / Kulaklık',
+                labelStyle: TextStyle(fontSize: 10),
+                prefixIcon: Icon(Icons.headphones_outlined, size: 18),
+                prefixIconConstraints: BoxConstraints(minWidth: 34),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 10,
+                ),
+                isDense: true,
+              ),
+              items: _outputs
+                  .map(
+                    (device) => DropdownMenuItem(
+                      value: device.id,
+                      child: Text(
+                        _deviceLabel(device),
+                        style: const TextStyle(fontSize: 10),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) => setState(() => _playbackId = value),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              initialValue: _ringtoneStyle,
+              isExpanded: true,
+              style: const TextStyle(fontSize: 10, color: Color(0xFF182437)),
+              decoration: const InputDecoration(
+                labelText: 'Zil Sesi',
+                labelStyle: TextStyle(fontSize: 10),
+                prefixIcon: Icon(Icons.notifications_none, size: 18),
+                prefixIconConstraints: BoxConstraints(minWidth: 34),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 10,
+                ),
+                isDense: true,
+              ),
+              items: const [
+                DropdownMenuItem(value: 0, child: Text('ASTERA Klasik')),
+                DropdownMenuItem(value: 1, child: Text('Yumuşak')),
+                DropdownMenuItem(value: 2, child: Text('Çift Zil')),
+                DropdownMenuItem(value: 3, child: Text('Dosyadan Zil')),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    _ringtoneStyle = value;
+                    _ringtoneError = null;
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+            if (_customRingtones.isNotEmpty) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey(
+                        'ringtone:$_ringtoneFilePath:${_customRingtones.length}',
+                      ),
+                      initialValue:
+                          _customRingtones.any(
+                            (tone) => tone.path == _ringtoneFilePath,
+                          )
+                          ? _ringtoneFilePath
+                          : null,
+                      isExpanded: true,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF182437),
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Kayıtlı Zil Tonu',
+                        labelStyle: TextStyle(fontSize: 10),
+                        prefixIcon: Icon(
+                          Icons.library_music_outlined,
+                          size: 18,
+                        ),
+                        prefixIconConstraints: BoxConstraints(minWidth: 34),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 10,
+                        ),
+                        isDense: true,
+                      ),
+                      items: _customRingtones
+                          .map(
+                            (tone) => DropdownMenuItem(
+                              value: tone.path,
+                              child: Text(
+                                tone.name,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (path) {
+                        if (path == null) return;
+                        setState(() {
+                          _ringtoneFilePath = path;
+                          _ringtoneStyle = 3;
+                          _ringtoneError = null;
+                        });
+                      },
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Seçili zil tonunu sil',
+                    onPressed:
+                        _ringtoneFilePath == null ||
+                            _customRingtones
+                                    .where(
+                                      (tone) => tone.path == _ringtoneFilePath,
+                                    )
+                                    .firstOrNull
+                                    ?.isBundled ==
+                                true
+                        ? null
+                        : _deleteSelectedRingtone,
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _pickRingtoneWav,
+                  icon: const Icon(Icons.audio_file_outlined, size: 17),
+                  label: const Text(
+                    'WAV İÇERİ AKTAR',
+                    style: TextStyle(fontSize: 10),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'WAV dosyasını ad vererek zil listesine ekler.',
+                    style: TextStyle(fontSize: 9.5, color: Color(0xFF7A8798)),
+                  ),
+                ),
+              ],
+            ),
+            if (_ringtoneError != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                _ringtoneError!,
+                style: const TextStyle(fontSize: 9.5, color: Colors.redAccent),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              ready
+                  ? 'Seçimler kaydedilir ve sonraki açılışlarda otomatik uygulanır.'
+                  : 'Windows üzerinde kullanılabilir mikrofon veya çıkış aygıtı bulunamadı.',
+              style: TextStyle(
+                fontSize: 9.5,
+                color: ready ? const Color(0xFF65748A) : Colors.redAccent,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('İPTAL'),
+        ),
+        FilledButton.icon(
+          onPressed: ready ? _save : null,
+          icon: const Icon(Icons.save_outlined, size: 17),
+          label: const Text('KAYDET'),
+        ),
+      ],
+    );
+  }
+
+  static String _deviceLabel(AudioDevice device) {
+    return device.name;
+  }
+
+  static String _defaultRingtoneName(String path) {
+    final fileName = path.split(RegExp(r'[/\\]')).last;
+    final extensionIndex = fileName.toLowerCase().lastIndexOf('.wav');
+    return extensionIndex > 0
+        ? fileName.substring(0, extensionIndex)
+        : fileName;
+  }
+
+  Future<void> _pickRingtoneWav() async {
+    try {
+      final path = await _windowChannel.invokeMethod<String>('pickRingtoneWav');
+      if (!mounted || path == null || path.isEmpty) return;
+      final nameController = TextEditingController(
+        text: _defaultRingtoneName(path),
+      );
+      final name = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Zil Tonuna İsim Ver'),
+          content: TextField(
+            controller: nameController,
+            autofocus: true,
+            maxLength: 50,
+            decoration: const InputDecoration(
+              labelText: 'Zil adı',
+              hintText: 'Örnek: Ofis Zili',
+            ),
+            onSubmitted: (value) {
+              if (value.trim().isNotEmpty) {
+                Navigator.pop(dialogContext, value.trim());
+              }
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('İPTAL'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = nameController.text.trim();
+                if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+              },
+              child: const Text('İÇERİ AKTAR'),
+            ),
+          ],
+        ),
+      );
+      nameController.dispose();
+      if (!mounted || name == null) return;
+      final importedPath = await widget.repository.importRingtoneFile(
+        path,
+        name,
+      );
+      if (!mounted) return;
+      setState(() {
+        _customRingtones = widget.repository.customRingtones;
+        _ringtoneFilePath = importedPath;
+        _ringtoneStyle = 3;
+        _ringtoneError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _ringtoneError = 'WAV dosyası seçilemedi: $error');
+    }
+  }
+
+  Future<void> _deleteSelectedRingtone() async {
+    final path = _ringtoneFilePath;
+    if (path == null) return;
+    final tone = _customRingtones
+        .where((item) => item.path == path)
+        .firstOrNull;
+    if (tone == null) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Zil Tonunu Sil'),
+        content: Text('"${tone.name}" zil tonu silinsin mi?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('VAZGEÇ'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('SİL'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final wasActive = widget.repository.ringtoneFilePath == path;
+    try {
+      if (wasActive) {
+        await widget.controller.setRingtoneStyle(0);
+        await widget.controller.setRingtoneFile('');
+      }
+      await widget.repository.deleteRingtoneFile(path);
+      if (!mounted) return;
+      setState(() {
+        _customRingtones = widget.repository.customRingtones;
+        _ringtoneFilePath = widget.repository.ringtoneFilePath;
+        _ringtoneStyle = widget.repository.ringtoneStyle;
+        _ringtoneError = null;
+      });
+    } catch (error) {
+      if (wasActive) {
+        await widget.controller.setRingtoneFile(path);
+        await widget.controller.setRingtoneStyle(3);
+      }
+      if (mounted) {
+        setState(() => _ringtoneError = 'Zil tonu silinemedi: $error');
+      }
+    }
+  }
+
+  Future<void> _refreshDevices() async {
+    if (_refreshing) return;
+    _refreshing = true;
+    if (mounted) setState(() {});
+    try {
+      final previousCapture = _selectedById(_inputs, _captureId)?.key;
+      final previousPlayback = _selectedById(_outputs, _playbackId)?.key;
+      final state = await widget.controller.getAudioDevices();
+      final inputs = state.devices
+          .where((device) => device.supportsInput)
+          .toList(growable: false);
+      final outputs = state.devices
+          .where((device) => device.supportsOutput)
+          .toList(growable: false);
+      if (!mounted) return;
+      setState(() {
+        _inputs = inputs;
+        _outputs = outputs;
+        _captureId = _preferredDeviceId(
+          inputs,
+          previousCapture,
+          state.captureDeviceId,
+        );
+        _playbackId = _preferredDeviceId(
+          outputs,
+          previousPlayback,
+          state.playbackDeviceId,
+        );
+      });
+    } catch (_) {
+      // Keep the previous list; the next automatic refresh will retry.
+    } finally {
+      _refreshing = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  static AudioDevice? _selectedById(List<AudioDevice> devices, int? id) {
+    for (final device in devices) {
+      if (device.id == id) return device;
+    }
+    return null;
+  }
+
+  static int? _preferredDeviceId(
+    List<AudioDevice> devices,
+    String? preferredKey,
+    int activeId,
+  ) {
+    for (final device in devices) {
+      if (device.key == preferredKey) return device.id;
+    }
+    for (final device in devices) {
+      if (device.id == activeId) return device.id;
+    }
+    return devices.isEmpty ? null : devices.first.id;
+  }
+
+  void _save() {
+    if (_ringtoneStyle == 3 && _ringtoneFilePath == null) {
+      setState(() => _ringtoneError = 'Özel zil için bir WAV dosyası seçin.');
+      return;
+    }
+    final capture = _inputs.firstWhere((device) => device.id == _captureId);
+    final playback = _outputs.firstWhere((device) => device.id == _playbackId);
+    Navigator.pop(
+      context,
+      _AudioSettingsResult(
+        capture: capture,
+        playback: playback,
+        ringtoneStyle: _ringtoneStyle,
+        ringtoneFilePath: _ringtoneFilePath,
+      ),
+    );
   }
 }
 
@@ -1232,9 +2048,15 @@ class _ControlButton extends StatelessWidget {
 }
 
 class _BehaviorBar extends StatelessWidget {
-  const _BehaviorBar({required this.controller});
+  const _BehaviorBar({
+    required this.controller,
+    required this.onAutoAnswerChanged,
+    required this.onAutoAnswerRingCountChanged,
+  });
 
   final RegistrationController controller;
+  final ValueChanged<bool> onAutoAnswerChanged;
+  final ValueChanged<int> onAutoAnswerRingCountChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1251,21 +2073,53 @@ class _BehaviorBar extends StatelessWidget {
                 style: TextStyle(fontSize: 10),
               ),
               value: controller.doNotDisturb,
-              onChanged: controller.setDoNotDisturb,
+              onChanged: (value) {
+                controller.setDoNotDisturb(value);
+                if (value) onAutoAnswerChanged(false);
+              },
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: SwitchListTile(
-              dense: true,
-              visualDensity: VisualDensity.compact,
-              contentPadding: EdgeInsets.zero,
-              title: const Text(
-                'Otomatik Cevap',
-                style: TextStyle(fontSize: 10),
-              ),
-              value: controller.autoAnswer,
-              onChanged: controller.setAutoAnswer,
+            child: Row(
+              children: [
+                Expanded(
+                  child: SwitchListTile(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Otomatik Cevap',
+                      style: TextStyle(fontSize: 10),
+                    ),
+                    value: controller.autoAnswer,
+                    onChanged: onAutoAnswerChanged,
+                  ),
+                ),
+                if (controller.autoAnswer)
+                  DropdownButtonHideUnderline(
+                    child: DropdownButton<int>(
+                      value: controller.autoAnswerRingCount,
+                      isDense: true,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF182437),
+                      ),
+                      items: List.generate(
+                        10,
+                        (index) => DropdownMenuItem(
+                          value: index + 1,
+                          child: Text('${index + 1} zil'),
+                        ),
+                      ),
+                      onChanged: (value) {
+                        if (value != null) {
+                          onAutoAnswerRingCountChanged(value);
+                        }
+                      },
+                    ),
+                  ),
+              ],
             ),
           ),
         ],

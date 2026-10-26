@@ -3,6 +3,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'src/registration_event.dart';
 import 'src/sip_account.dart';
 import 'src/call_event.dart';
+import 'src/audio_device.dart';
 import 'astera_sip_method_channel.dart';
 
 abstract class AsteraSipPlatform extends PlatformInterface {
@@ -73,6 +74,16 @@ abstract class AsteraSipPlatform extends PlatformInterface {
   );
   Future<void> setSpeakerLevel(double level) =>
       throw UnimplementedError('setSpeakerLevel() has not been implemented.');
+  Future<AudioDeviceState> getAudioDevices() =>
+      throw UnimplementedError('getAudioDevices() has not been implemented.');
+  Future<void> setAudioDevices({
+    required int captureDeviceId,
+    required int playbackDeviceId,
+  }) => throw UnimplementedError('setAudioDevices() has not been implemented.');
+  Future<void> setRingtoneStyle(int style) =>
+      throw UnimplementedError('setRingtoneStyle() has not been implemented.');
+  Future<void> setRingtoneFile(String path) =>
+      throw UnimplementedError('setRingtoneFile() has not been implemented.');
 
   Future<void> dispose() =>
       throw UnimplementedError('dispose() has not been implemented.');

@@ -60,7 +60,7 @@ function url_trigger_valid_template(string $template): bool
 
 function url_trigger_enabled_for_extension(array $config, ?array $extension): bool
 {
-    $preference = (string) ($extension['crm_trigger'] ?? 'inherit');
+    $preference = (string) ($extension['crm_trigger'] ?? 'disabled');
     return match ($preference) {
         'enabled' => true,
         'disabled' => false,

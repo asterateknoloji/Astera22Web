@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASTERA · <?= e(ucfirst(str_replace('_', ' ', current_page()))) ?></title>
-<link rel="stylesheet" href="assets/css/app.css?v=45">
+<link rel="stylesheet" href="assets/css/app.css?v=<?= (int) @filemtime(dirname(__DIR__) . '/assets/css/app.css') ?>">
 </head>
 <body>
 <aside class="rail">
@@ -20,15 +20,16 @@
         <?php if (is_super()): ?>
             <a class="<?= nav_active('departments') ?>" href="index.php?p=departments">Firmalar</a>
         <?php endif; ?>
-        <a class="<?= nav_active('crm') ?>" href="index.php?p=crm">Müşteri kartları</a>
+        <a class="<?= nav_active('crm') ?>" href="index.php?p=crm">Fihrist Kayıtları</a>
         <details class="nav-group" name="rail-menu"
-            <?= in_array(current_page(), ['extensions', 'webrtc', 'bulk', 'features'], true) ? 'open' : '' ?>>
+            <?= in_array(current_page(), ['extensions', 'webrtc', 'bulk', 'features', 'provisioning'], true) ? 'open' : '' ?>>
             <summary>Aboneler</summary>
             <div class="nav-group-items">
                 <a class="<?= nav_active('extensions') ?>" href="index.php?p=extensions">Dahili</a>
                 <a class="<?= nav_active('webrtc') ?>" href="index.php?p=webrtc">WebPhone</a>
                 <a class="<?= nav_active('bulk') ?>" href="index.php?p=bulk">Toplu ekle</a>
                 <a class="<?= nav_active('features') ?>" href="index.php?p=features">Özellik kodları</a>
+                <a class="<?= nav_active('provisioning') ?>" href="index.php?p=provisioning">Telefon Autoprovision</a>
             </div>
         </details>
         <details class="nav-group" name="rail-menu"
@@ -51,10 +52,11 @@
             </div>
         </details>
         <details class="nav-group" name="rail-menu"
-            <?= in_array(current_page(), ['trunks', 'outbound', 'inbound', 'blacklist'], true) ? 'open' : '' ?>>
+            <?= in_array(current_page(), ['trunks', 'pri', 'outbound', 'inbound', 'blacklist'], true) ? 'open' : '' ?>>
             <summary>Hatlar</summary>
             <div class="nav-group-items">
                 <a class="<?= nav_active('trunks') ?>" href="index.php?p=trunks">Dış hat</a>
+                <a class="<?= nav_active('pri') ?>" href="index.php?p=pri">PRI / DAHDI</a>
                 <a class="<?= nav_active('outbound') ?>" href="index.php?p=outbound">Giden hat</a>
                 <a class="<?= nav_active('inbound') ?>" href="index.php?p=inbound">Gelen hat</a>
                 <a class="<?= nav_active('blacklist') ?>" href="index.php?p=blacklist">Kara liste</a>
@@ -77,21 +79,38 @@
         </details>
         <?php if (is_super()): ?>
             <details class="nav-group" name="rail-menu"
-                <?= in_array(current_page(), ['contexts', 'logs', 'security', 'ssl', 'system'], true) ? 'open' : '' ?>>
+                <?= in_array(current_page(), ['contexts', 'logs', 'security', 'ssl', 'network', 'ntp', 'ami', 'system', 'alarmlar', 'integrations', 'backup'], true) ? 'open' : '' ?>>
                 <summary>Sistem</summary>
                 <div class="nav-group-items">
                     <a class="<?= nav_active('contexts') ?>" href="index.php?p=contexts">Dialplan context’leri</a>
                     <a class="<?= nav_active('logs') ?>" href="index.php?p=logs">Log</a>
                     <a class="<?= nav_active('security') ?>" href="index.php?p=security">Güvenlik / IP İzinleri</a>
                     <a class="<?= nav_active('ssl') ?>" href="index.php?p=ssl">SSL Sertifikası</a>
+                    <a class="<?= nav_active('network') ?>" href="index.php?p=network">Ethernet Ayarları</a>
+                    <a class="<?= nav_active('ntp') ?>" href="index.php?p=ntp">NTP Ayarları</a>
+                    <a class="<?= nav_active('ami') ?>" href="index.php?p=ami">AMI Kullanıcıları</a>
+                    <a class="<?= nav_active('alarmlar') ?>" href="index.php?p=alarmlar">Alarmlar</a>
+                    <a class="<?= nav_active('integrations') ?>" href="index.php?p=integrations">Entegrasyonlar</a>
+                    <a class="<?= nav_active('backup') ?>" href="index.php?p=backup">Backup</a>
                     <a class="<?= nav_active('system') ?>" href="index.php?p=system">Sistem</a>
                 </div>
             </details>
         <?php endif; ?>
     </nav>
     <div class="rail-foot">
-        <span class="dot" id="liveDot"></span>
-        <span id="liveHost"><?= e(PBX_HOST) ?></span>
+        <div class="rail-system-row">
+            <span class="dot" id="liveDot"></span>
+            <span>Santral IP</span>
+            <strong id="liveHost"><?= e(PBX_HOST) ?></strong>
+        </div>
+        <div class="rail-system-row">
+            <span>WAN IP</span>
+            <strong><?= e(pbx_public_wan_ip() ?: 'Alınamadı') ?></strong>
+        </div>
+        <div class="rail-clock">
+            <span>Sistem tarihi / saati</span>
+            <time id="systemClock" data-server-epoch="<?= time() ?>">—</time>
+        </div>
         <a href="logout.php">Çıkış</a>
     </div>
 </aside>
@@ -101,12 +120,14 @@
             <h1 id="pageTitle"><?= e([
                 'dashboard' => 'Santral özeti',
                 'departments' => 'Firmalar / departmanlar',
-                'crm' => 'Müşteri kartları',
+                'crm' => 'Fihrist Kayıtları',
                 'extensions' => 'Dahili aboneler',
                 'webrtc' => 'WebPhone',
                 'bulk' => 'Toplu abone ekle',
                 'features' => 'Özellik kodları',
+                'provisioning' => 'Telefon autoprovision',
                 'trunks' => 'Dış hat (trunk)',
+                'pri' => 'PRI / DAHDI ayarları',
                 'outbound' => 'Giden arama kuralları',
                 'inbound' => 'Gelen arama kuralları',
                 'queues' => 'Çağrı kuyrukları',
@@ -132,7 +153,13 @@
                 'logs' => 'Asterisk log',
                 'security' => 'Güvenlik / IP izinleri',
                 'ssl' => 'SSL sertifikası',
+                'network' => 'Ethernet ayarları',
+                'ami' => 'AMI kullanıcıları',
+                'alarmlar' => 'Alarmlar',
+                'integrations' => 'Entegrasyonlar',
+                'backup' => 'Backup',
                 'system' => 'Sistem',
+                'ntp' => 'NTP Ayarları',
             ][current_page()] ?? 'ASTERA') ?></h1>
             <p class="muted" id="pageSub">Astera 22.11.0</p>
         </div>
@@ -155,6 +182,7 @@
             <button class="btn <?= $pendingChangeCount > 0 ? 'primary' : '' ?>" id="applyButton" type="button" data-action="apply">
                 Santrale uygula
             </button>
+            <span class="pill dim" id="applyTimer" hidden></span>
             <a class="btn" href="logout.php">Çıkış</a>
         </div>
     </header>

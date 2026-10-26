@@ -4,9 +4,7 @@ declare(strict_types=1);
 function pbx_odbc_sql(string $sql, bool $delimited = false): array
 {
     $sql = rtrim($sql, " \t\n\r\0\x0B;") . ";\n";
-    if (PHP_OS_FAMILY !== 'Windows'
-        && is_file('/etc/asterisk/asterisk.conf')
-        && is_executable('/usr/bin/isql')) {
+    if (PHP_OS_FAMILY !== 'Windows' && is_executable('/usr/bin/isql')) {
         $local = tempnam(sys_get_temp_dir(), 'astera-sql-');
         if ($local === false || file_put_contents($local, $sql) === false) {
             return ['ok' => false, 'code' => 1, 'output' => 'Geçici SQL dosyası oluşturulamadı'];
@@ -55,7 +53,10 @@ function pbx_odbc_rows(string $sql, ?bool &$queryOk = null): array
     if (!$queryOk) {
         return [];
     }
-    $lines = preg_split('/\r?\n/', trim($res['output']));
+    $lines = array_values(array_filter(
+        preg_split('/\r?\n/', trim($res['output'])) ?: [],
+        static fn(string $line): bool => !str_starts_with(trim($line), '** ')
+    ));
     if (!$lines || count($lines) < 2) {
         return [];
     }
@@ -84,6 +85,41 @@ function pbx_pg_admin(string $sql): array
 function pbx_sql_literal(string $value): string
 {
     return "'" . str_replace("'", "''", $value) . "'";
+}
+
+function pbx_public_wan_ip(): string
+{
+    $configured = trim((string) (defined('PBX_PUBLIC_IP') ? PBX_PUBLIC_IP : ''));
+    if ($configured !== '' && filter_var($configured, FILTER_VALIDATE_IP)) {
+        return $configured;
+    }
+
+    $cache = DATA_PATH . DIRECTORY_SEPARATOR . '.wan-ip-cache';
+    if (is_file($cache) && (time() - (int) filemtime($cache)) < 3600) {
+        $cached = trim((string) file_get_contents($cache));
+        return filter_var($cached, FILTER_VALIDATE_IP) ? $cached : '';
+    }
+
+    $wanIp = '';
+    if (function_exists('curl_init')) {
+        $curl = curl_init('https://api.ipify.org');
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 2,
+            CURLOPT_TIMEOUT => 3,
+            CURLOPT_USERAGENT => 'AsteraPBX/22',
+        ]);
+        $response = curl_exec($curl);
+        if (is_string($response)) {
+            $wanIp = trim($response);
+        }
+        curl_close($curl);
+    }
+    if (!filter_var($wanIp, FILTER_VALIDATE_IP)) {
+        $wanIp = '';
+    }
+    @file_put_contents($cache, $wanIp !== '' ? $wanIp : '-', LOCK_EX);
+    return $wanIp;
 }
 
 function pbx_status(?string $deptId = null): array
@@ -1141,9 +1177,28 @@ function pbx_daily_call_summary(?string $deptId = null): array
     $where = implode(' AND ', $clauses);
     $queryOk = false;
     $callId = "COALESCE(NULLIF(linkedid, ''), uniqueid)";
+    $externalExtensionNumbers = [];
+    foreach (store_read('extensions') as $extension) {
+        if ($deptId !== null && (string) ($extension['dept'] ?? '') !== $deptId) {
+            continue;
+        }
+        $technology = strtolower((string) ($extension['technology'] ?? 'pjsip'));
+        $extensionNumber = (string) ($extension['exten'] ?? '');
+        if (in_array($technology, ['dahdi', 'custom'], true) && $extensionNumber !== '') {
+            $externalExtensionNumbers[$extensionNumber] = true;
+        }
+    }
+    $externalDestinationSql = $externalExtensionNumbers
+        ? ' OR dst IN (' . implode(',', array_map(
+            'pbx_sql_literal',
+            array_keys($externalExtensionNumbers)
+        )) . ')'
+        : '';
     $incoming = "(recordingfile ILIKE '%-yon_gelen-%' OR "
+        . "channel ILIKE 'DAHDI/%' OR "
         . "(dcontext LIKE 'int-%' AND length(regexp_replace(src, '[^0-9]', '', 'g')) > 6))";
     $outgoing = "(recordingfile ILIKE '%-yon_giden-%' OR "
+        . "dstchannel ILIKE 'DAHDI/%'{$externalDestinationSql} OR "
         . "(dcontext LIKE 'from-%' AND length(regexp_replace(dst, '[^0-9]', '', 'g')) > 6))";
     $rows = pbx_odbc_rows(
         "SELECT "
@@ -1167,14 +1222,19 @@ function pbx_daily_call_summary(?string $deptId = null): array
         }
         $recording = (string) ($row['recordingfile'] ?? '');
         $dcontext = (string) ($row['dcontext'] ?? '');
+        $channel = (string) ($row['channel'] ?? '');
+        $destinationChannel = (string) ($row['dstchannel'] ?? '');
         $src = preg_replace('/\D+/', '', (string) ($row['src'] ?? '')) ?? '';
         $dst = preg_replace('/\D+/', '', (string) ($row['dst'] ?? '')) ?? '';
         $calls[$callId] ??= ['incoming' => false, 'outgoing' => false, 'answered' => false];
         $calls[$callId]['incoming'] = $calls[$callId]['incoming']
             || str_contains($recording, '-yon_gelen-')
+            || str_starts_with(strtoupper($channel), 'DAHDI/')
             || (str_starts_with($dcontext, 'int-') && strlen($src) > 6);
         $calls[$callId]['outgoing'] = $calls[$callId]['outgoing']
             || str_contains($recording, '-yon_giden-')
+            || str_starts_with(strtoupper($destinationChannel), 'DAHDI/')
+            || isset($externalExtensionNumbers[$dst])
             || (str_starts_with($dcontext, 'from-') && strlen($dst) > 6);
         $calls[$callId]['answered'] = $calls[$callId]['answered']
             || (string) ($row['disposition'] ?? '') === 'ANSWERED';
@@ -1785,7 +1845,7 @@ function pbx_custom_sounds(?string $deptId = null): array
 function pbx_sound_languages(): array
 {
     $res = pbx_ssh("find /var/lib/asterisk/sounds -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null");
-    $languages = ['en'];
+    $languages = ['tr'];
     foreach (preg_split('/\r?\n/', $res['output']) as $name) {
         $name = ast_sanitize_id(trim($name));
         if ($name !== '' && $name !== 'custom') {
@@ -1819,6 +1879,159 @@ function pbx_moh_files(?string $deptId): array
         }
     }
     return $files;
+}
+
+function pbx_media_usage_index(): array
+{
+    $index = ['sound' => [], 'moh' => []];
+    $queues = store_read('queues');
+    $ringgroups = store_read('ringgroups');
+    $ivrs = store_read('ivrs');
+    $announcements = store_read('announcements');
+    $customs = store_read('customs');
+    $addSound = static function (
+        string $dept,
+        string $playback,
+        string $section,
+        string $name,
+        string $detail
+    ) use (&$index): void {
+        $playback = normalize_sound_name($playback);
+        if ($dept === '' || $playback === '') {
+            return;
+        }
+        $key = $section . "\0" . $name . "\0" . $detail;
+        $index['sound'][$dept][$playback][$key] = [
+            'section' => $section,
+            'name' => $name,
+            'detail' => $detail,
+        ];
+    };
+    foreach ($queues as $row) {
+        $dept = (string) ($row['dept'] ?? '');
+        $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'Kuyruk');
+        $addSound($dept, (string) ($row['announce'] ?? ''), 'Kuyruk', $name, 'Karşılama anonsu');
+        $addSound(
+            $dept,
+            (string) ($row['periodic_announce'] ?? ''),
+            'Kuyruk',
+            $name,
+            'Periyodik anons'
+        );
+    }
+    foreach ($ringgroups as $row) {
+        $dept = (string) ($row['dept'] ?? '');
+        $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'Ring grup');
+        $addSound($dept, (string) ($row['announcement'] ?? ''), 'Ring grup', $name, 'Karşılama anonsu');
+    }
+    foreach ($ivrs as $row) {
+        $dept = (string) ($row['dept'] ?? '');
+        $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'IVR');
+        $addSound($dept, (string) ($row['sound'] ?? ''), 'IVR', $name, 'Ana menü anonsu');
+    }
+    foreach ($announcements as $row) {
+        $dept = (string) ($row['dept'] ?? '');
+        $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'Duyuru');
+        $addSound($dept, (string) ($row['sound'] ?? ''), 'Duyuru', $name, 'Oynatılan ses');
+    }
+    foreach ($customs as $row) {
+        $dept = (string) ($row['dept'] ?? '');
+        $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'Özel hedef');
+        $addSound($dept, (string) ($row['sound'] ?? ''), 'Özel hedef', $name, 'Oynatılan ses');
+    }
+    if (function_exists('custom_context_rows') && custom_context_schema_ready()) {
+        foreach (custom_context_rows() as $context) {
+            $dept = (string) ($context['dept_id'] ?? '');
+            $name = (string) ($context['context_name'] ?? $context['context_id'] ?? 'Özel context');
+            foreach ((array) ($context['steps'] ?? []) as $step) {
+                $application = strtolower((string) ($step['application'] ?? ''));
+                $parts = array_map('trim', explode(',', (string) ($step['application_data'] ?? '')));
+                $sounds = [];
+                if (in_array($application, ['playback', 'background'], true)) {
+                    $sounds = explode('&', (string) ($parts[0] ?? ''));
+                } elseif ($application === 'read') {
+                    $sounds = explode('&', (string) ($parts[1] ?? ''));
+                }
+                foreach ($sounds as $sound) {
+                    $addSound($dept, $sound, 'Özel context', $name, ucfirst($application));
+                }
+            }
+        }
+    }
+
+    foreach (departments() as $department) {
+        $dept = (string) ($department['id'] ?? '');
+        $code = dept_code_of($dept);
+        if ($dept === '' || $code === '') {
+            continue;
+        }
+        $mohUsage = [];
+        foreach ($queues as $row) {
+            if ((string) ($row['dept'] ?? '') !== $dept) {
+                continue;
+            }
+            $musicClass = ast_sanitize_id((string) ($row['musicclass'] ?? $code)) ?: $code;
+            if ($musicClass === $code) {
+                $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'Kuyruk');
+                $mohUsage['Kuyruk' . "\0" . $name] = [
+                    'section' => 'Kuyruk',
+                    'name' => $name,
+                    'detail' => 'Bekleme müziği',
+                ];
+            }
+        }
+        foreach ($ringgroups as $row) {
+            if ((string) ($row['dept'] ?? '') !== $dept) {
+                continue;
+            }
+            $musicClass = trim((string) ($row['music_class'] ?? ''));
+            if ($musicClass === '' || $musicClass === 'default') {
+                $musicClass = $code;
+            }
+            if ($musicClass === $code) {
+                $name = trim((string) ($row['name'] ?? '')) ?: (string) ($row['id'] ?? 'Ring grup');
+                $mohUsage['Ring grup' . "\0" . $name] = [
+                    'section' => 'Ring grup',
+                    'name' => $name,
+                    'detail' => 'Bekleme müziği',
+                ];
+            }
+        }
+        $mohUsage['Çağrı parkı' . "\0" . $code] = [
+            'section' => 'Çağrı parkı',
+            'name' => $code,
+            'detail' => 'Park bekleme müziği',
+        ];
+        $index['moh'][$dept] = array_values($mohUsage);
+    }
+
+    foreach ($index['sound'] as $dept => $sounds) {
+        foreach ($sounds as $playback => $usage) {
+            $index['sound'][$dept][$playback] = array_values($usage);
+        }
+    }
+    return $index;
+}
+
+function pbx_media_with_usage(?string $deptId = null): array
+{
+    $usageIndex = pbx_media_usage_index();
+    $sounds = pbx_custom_sounds($deptId);
+    foreach ($sounds as &$file) {
+        $dept = (string) ($file['dept'] ?? '');
+        $playback = normalize_sound_name((string) ($file['playback'] ?? ''));
+        $file['usage'] = $usageIndex['sound'][$dept][$playback] ?? [];
+        $file['in_use'] = !empty($file['usage']);
+    }
+    unset($file);
+    $moh = pbx_moh_files($deptId);
+    foreach ($moh as &$file) {
+        $dept = (string) ($file['dept'] ?? '');
+        $file['usage'] = $usageIndex['moh'][$dept] ?? [];
+        $file['in_use'] = !empty($file['usage']);
+    }
+    unset($file);
+    return ['files' => $sounds, 'moh' => $moh];
 }
 
 function pbx_upload_media(string $dept, string $kind): array
@@ -1981,7 +2194,7 @@ function pbx_delete_media(string $path): array
     $mediaRow['status'] = 'deleting';
     $mediaRow['updated_at'] = date(DATE_ATOM);
     store_upsert('media', $mediaRow, 'id');
-    $res = pbx_ssh('rm -f ' . $path);
+    $res = pbx_ssh('rm -f -- ' . escapeshellarg($path));
     if (!$res['ok']) {
         $mediaRow['status'] = 'delete_failed';
         $mediaRow['error'] = (string) ($res['output'] ?? '');
@@ -2000,5 +2213,10 @@ function pbx_delete_media(string $path): array
         store_write('sounds', $rows);
     }
     store_delete('media', 'id', (string) $mediaRow['id']);
+    if (str_contains($path, '/moh/')) {
+        pbx_ssh("asterisk -rx 'moh reload'");
+    } else {
+        pbx_ssh("asterisk -rx 'module reload sounds'");
+    }
     return ['ok' => $res['ok'], 'output' => $res['ok'] ? 'Silindi' : $res['output']];
 }

@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <flutter/standard_method_codec.h>
+#include <commdlg.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <windowsx.h>
@@ -12,6 +13,8 @@
 #include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "resource.h"
+#include "utils.h"
 
 namespace {
 
@@ -20,6 +23,12 @@ constexpr int kHistoryListId = 1001;
 constexpr wchar_t kPresenceWindowClass[] = L"ASTERA_PRESENCE_WINDOW";
 constexpr int kPresenceListId = 1002;
 constexpr int kPresenceFilterId = 1003;
+constexpr UINT kTrayCallbackMessage = WM_APP + 42;
+constexpr UINT kTrayIconId = 1;
+constexpr UINT kTrayOpenCommand = 41001;
+constexpr UINT kTrayExitCommand = 41002;
+constexpr UINT kTrayWebsiteCommand = 41003;
+constexpr UINT kTrayHelpCommand = 41004;
 HWND g_history_window = nullptr;
 HWND g_history_list = nullptr;
 HFONT g_history_font = nullptr;
@@ -373,7 +382,7 @@ LRESULT CALLBACK HistoryWindowProc(HWND window, UINT message, WPARAM wparam,
       return 0;
     case WM_COMMAND:
       if (LOWORD(wparam) == kHistoryListId &&
-          HIWORD(wparam) == LBN_SELCHANGE && g_window_channel) {
+          HIWORD(wparam) == LBN_DBLCLK && g_window_channel) {
         const auto selected = static_cast<int>(
             SendMessage(g_history_list, LB_GETCURSEL, 0, 0));
         if (selected >= 0 &&
@@ -591,7 +600,7 @@ void ShowHistoryWindow(HWND owner, const std::string& title,
         GetModuleHandle(nullptr), nullptr);
   } else {
     SetWindowText(g_history_window, window_title.c_str());
-    SetWindowPos(g_history_window, HWND_TOPMOST, owner_rect.right + 8,
+    SetWindowPos(g_history_window, HWND_TOP, owner_rect.right + 8,
                  owner_rect.top, 520, owner_rect.bottom - owner_rect.top,
                  SWP_SHOWWINDOW);
   }
@@ -618,7 +627,7 @@ void PositionHistoryWindow(HWND owner) {
   }
   RECT owner_rect{};
   GetWindowRect(owner, &owner_rect);
-  SetWindowPos(g_history_window, HWND_TOPMOST, owner_rect.right + 8,
+  SetWindowPos(g_history_window, HWND_TOP, owner_rect.right + 8,
                owner_rect.top, 0, 0,
                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
@@ -675,7 +684,7 @@ void PositionPresenceWindow(HWND owner) {
   }
   RECT owner_rect{};
   GetWindowRect(owner, &owner_rect);
-  SetWindowPos(g_presence_window, HWND_TOPMOST, owner_rect.right + 8,
+  SetWindowPos(g_presence_window, HWND_TOP, owner_rect.right + 8,
                owner_rect.top, 0, 0,
                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
@@ -687,12 +696,12 @@ void PositionAuxiliaryWindows(HWND owner) {
   if (g_history_window) {
     RECT history_rect{};
     GetWindowRect(g_history_window, &history_rect);
-    SetWindowPos(g_history_window, HWND_TOPMOST, next_x, owner_rect.top, 0, 0,
+    SetWindowPos(g_history_window, HWND_TOP, next_x, owner_rect.top, 0, 0,
                  SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     next_x += history_rect.right - history_rect.left + 8;
   }
   if (g_presence_window) {
-    SetWindowPos(g_presence_window, HWND_TOPMOST, next_x, owner_rect.top, 0, 0,
+    SetWindowPos(g_presence_window, HWND_TOP, next_x, owner_rect.top, 0, 0,
                  SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
   }
 }
@@ -712,7 +721,7 @@ void BringWindowToForeground(HWND window) {
       foreground_thread != 0 && foreground_thread != current_thread &&
       AttachThreadInput(current_thread, foreground_thread, TRUE);
 
-  SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+  SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
   BringWindowToTop(window);
   SetForegroundWindow(window);
@@ -737,6 +746,109 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
 FlutterWindow::~FlutterWindow() {}
+
+void FlutterWindow::HideToTray() {
+  if (!tray_icon_added_) {
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = GetHandle();
+    icon.uID = kTrayIconId;
+    icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    icon.uCallbackMessage = kTrayCallbackMessage;
+    icon.hIcon = LoadIcon(
+        GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+    wcscpy_s(
+        icon.szTip,
+        L"ASTERA Softphone - A\u00E7mak i\u00E7in t\u0131klay\u0131n, "
+        L"kapatmak i\u00E7in sa\u011F t\u0131klay\u0131n");
+    tray_icon_added_ = Shell_NotifyIconW(NIM_ADD, &icon) == TRUE;
+  }
+  ShowWindow(GetHandle(), SW_HIDE);
+}
+
+void FlutterWindow::RestoreFromTray() {
+  RemoveTrayIcon();
+  BringWindowToForeground(GetHandle());
+}
+
+void FlutterWindow::RemoveTrayIcon() {
+  if (!tray_icon_added_) {
+    return;
+  }
+  NOTIFYICONDATAW icon{};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = GetHandle();
+  icon.uID = kTrayIconId;
+  Shell_NotifyIconW(NIM_DELETE, &icon);
+  tray_icon_added_ = false;
+}
+
+void FlutterWindow::ShowTrayMenu() {
+  HMENU menu = CreatePopupMenu();
+  if (!menu) {
+    return;
+  }
+  AppendMenuW(menu, MF_STRING, kTrayOpenCommand, L"A\u00E7");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(
+      menu, MF_STRING, kTrayWebsiteCommand, L"ASTERA Web Sitesi");
+  AppendMenuW(
+      menu,
+      MF_STRING,
+      kTrayHelpCommand,
+      L"Nas\u0131l Kullan\u0131l\u0131r?");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Kapat");
+  SetMenuDefaultItem(menu, kTrayOpenCommand, FALSE);
+
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  SetForegroundWindow(GetHandle());
+  const UINT command = TrackPopupMenu(
+      menu,
+      TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+      cursor.x,
+      cursor.y,
+      0,
+      GetHandle(),
+      nullptr);
+  DestroyMenu(menu);
+  PostMessage(GetHandle(), WM_NULL, 0, 0);
+
+  if (command == kTrayOpenCommand) {
+    RestoreFromTray();
+  } else if (command == kTrayWebsiteCommand) {
+    ShellExecuteW(
+        nullptr,
+        L"open",
+        L"https://www.astera.com.tr",
+        nullptr,
+        nullptr,
+        SW_SHOWNORMAL);
+  } else if (command == kTrayHelpCommand) {
+    MessageBoxW(
+        GetHandle(),
+        L"ASTERA Softphone, Astera PBX dahili hesab\u0131n\u0131z\u0131 "
+        L"Windows bilgisayarda kullanarak arama yapmak ve gelen "
+        L"aramalar\u0131 yan\u0131tlamak i\u00E7in kullan\u0131l\u0131r.\n\n"
+        L"Nas\u0131l kullan\u0131l\u0131r?\n"
+        L"1. Uygulamay\u0131 a\u00E7\u0131n ve SIP hesab\u0131n\u0131z\u0131 "
+        L"ekleyin.\n"
+        L"2. Aranacak numaray\u0131 yaz\u0131p arama d\u00FC\u011Fmesine "
+        L"bas\u0131n.\n"
+        L"3. Mikrofon ve kulakl\u0131k se\u00E7imini Ayarlar b\u00F6l\u00FCm\u00FCnden "
+        L"yap\u0131n.\n"
+        L"4. X d\u00FC\u011Fmesi uygulamay\u0131 sistem tepsisine gizler.\n"
+        L"5. Tamamen kapatmak i\u00E7in tepsi simgesine sa\u011F t\u0131klay\u0131p "
+        L"Kapat'\u0131 se\u00E7in.",
+        L"ASTERA Softphone - Yard\u0131m",
+        MB_OK | MB_ICONINFORMATION);
+  } else if (command == kTrayExitCommand) {
+    exit_requested_ = true;
+    RemoveTrayIcon();
+    DestroyWindow(GetHandle());
+  }
+}
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
@@ -784,6 +896,42 @@ bool FlutterWindow::OnCreate() {
             return;
           }
           result->Success();
+          return;
+        }
+        if (call.method_name() == "showSystemWarning") {
+          const auto* message = std::get_if<std::string>(call.arguments());
+          if (!message || message->empty()) {
+            result->Error("invalid_message", "Uyarı metni gerekli.");
+            return;
+          }
+          const auto wide_message = Utf16FromUtf8(*message);
+          MessageBoxW(GetHandle(), wide_message.c_str(),
+                      L"ASTERA Softphone - Ses Ayg\u0131t\u0131 Uyar\u0131s\u0131",
+                      MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "pickRingtoneWav") {
+          std::vector<wchar_t> file_path(32768, L'\0');
+          OPENFILENAMEW dialog{};
+          dialog.lStructSize = sizeof(dialog);
+          dialog.hwndOwner = GetHandle();
+          dialog.lpstrFilter =
+              L"WAV ses dosyaları (*.wav)\0*.wav\0Tüm dosyalar (*.*)\0*.*\0";
+          dialog.lpstrFile = file_path.data();
+          dialog.nMaxFile = static_cast<DWORD>(file_path.size());
+          dialog.lpstrTitle = L"Zil sesi WAV dosyasını seçin";
+          dialog.lpstrDefExt = L"wav";
+          dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                         OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+          if (GetOpenFileNameW(&dialog)) {
+            result->Success(
+                flutter::EncodableValue(Utf8FromUtf16(file_path.data())));
+          } else if (CommDlgExtendedError() == 0) {
+            result->Success();
+          } else {
+            result->Error("file_picker_failed", "WAV dosyası seçilemedi.");
+          }
           return;
         }
         const bool show_history = call.method_name() == "showCallHistory";
@@ -928,6 +1076,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  RemoveTrayIcon();
   g_window_channel = nullptr;
   if (g_history_window) {
     DestroyWindow(g_history_window);
@@ -947,6 +1096,18 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_CLOSE && !exit_requested_) {
+    HideToTray();
+    return 0;
+  }
+  if (message == kTrayCallbackMessage) {
+    if (lparam == WM_LBUTTONUP || lparam == WM_LBUTTONDBLCLK) {
+      RestoreFromTray();
+    } else if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
+      ShowTrayMenu();
+    }
+    return 0;
+  }
   if (message == WM_MOVE) {
     PositionAuxiliaryWindows(hwnd);
   }

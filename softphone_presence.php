@@ -62,6 +62,26 @@ if ($dept === '') {
     $respond(['ok' => false, 'error' => 'SIP hesabının firma bilgisi yok'], 422);
 }
 
+$urlTrigger = find_by('url_triggers', 'dept', $dept);
+$browserTrigger = null;
+if (
+    $urlTrigger
+    && url_trigger_enabled_for_extension($urlTrigger, $extension)
+    && in_array((string) ($urlTrigger['mode'] ?? 'both'), ['browser', 'both'], true)
+) {
+    $browserTrigger = [
+        'url_template' => (string) ($urlTrigger['url_template'] ?? ''),
+        'trigger' => (string) ($urlTrigger['trigger'] ?? 'ring'),
+        'number_format' => (string) ($urlTrigger['number_format'] ?? 'digits'),
+        'min_digits' => max(1, min(32, (int) ($urlTrigger['min_digits'] ?? 7))),
+        'department' => $dept,
+        'extension' => (string) ($extension['exten'] ?? ''),
+        'access_token' => softphone_crm_token_create($extension),
+    ];
+}
+
+$extensions = [];
+$presenceOk = false;
 try {
     $status = pbx_blf_status($dept);
     $extensions = array_values(array_map(
@@ -81,32 +101,18 @@ try {
         static fn (array $a, array $b): int =>
             strnatcasecmp($a['extension'], $b['extension'])
     );
-    $urlTrigger = find_by('url_triggers', 'dept', $dept);
-    $browserTrigger = null;
-    if (
-        $urlTrigger
-        && url_trigger_enabled_for_extension($urlTrigger, $extension)
-        && in_array((string) ($urlTrigger['mode'] ?? 'both'), ['browser', 'both'], true)
-    ) {
-        $browserTrigger = [
-            'url_template' => (string) ($urlTrigger['url_template'] ?? ''),
-            'trigger' => (string) ($urlTrigger['trigger'] ?? 'ring'),
-            'number_format' => (string) ($urlTrigger['number_format'] ?? 'digits'),
-            'min_digits' => max(1, min(32, (int) ($urlTrigger['min_digits'] ?? 7))),
-            'department' => $dept,
-            'extension' => (string) ($extension['exten'] ?? ''),
-            'access_token' => softphone_crm_token_create($extension),
-        ];
-    }
-    $respond([
-        'ok' => !empty($status['ok']),
-        'source' => 'ami',
-        'extensions' => $extensions,
-        'url_trigger' => $browserTrigger,
-    ], !empty($status['ok']) ? 200 : 503);
+    $presenceOk = !empty($status['ok']);
 } catch (Throwable) {
-    $respond(
-        ['ok' => false, 'error' => 'AMI meşguliyet bilgisi alınamadı'],
-        503
-    );
+    $extensions = [];
 }
+
+// CRM yetkisi AMI/meşguliyet bağlantısından bağımsızdır. Böylece AMI geçici
+// olarak erişilemezken bile dahili bazlı CRM açık/kapalı ayarı doğru uygulanır.
+$respond([
+    'ok' => true,
+    'source' => 'ami',
+    'presence_ok' => $presenceOk,
+    'presence_error' => $presenceOk ? null : 'AMI meşguliyet bilgisi alınamadı',
+    'extensions' => $extensions,
+    'url_trigger' => $browserTrigger,
+]);

@@ -4,7 +4,7 @@ declare(strict_types=1);
 function pbx_relational_stores(): array
 {
     return [
-        'extensions', 'trunks', 'outbound', 'inbound', 'queues', 'ringgroups', 'ivrs',
+        'extensions', 'trunks', 'pri_spans', 'outbound', 'inbound', 'queues', 'ringgroups', 'ivrs',
         'timeconditions', 'announcements', 'conferences', 'blacklist', 'parking',
         'flows', 'disas', 'pagings', 'speeddials', 'customs', 'sounds', 'media',
         'url_triggers',
@@ -21,26 +21,35 @@ function pbx_relational_supports(string $name): bool
     return $name === 'departments' || in_array($name, pbx_relational_stores(), true);
 }
 
+function pbx_relational_pdo(): ?PDO
+{
+    if (PHP_OS_FAMILY === 'Windows' || !extension_loaded('pdo_pgsql')) {
+        return null;
+    }
+    static $pdo = null;
+    if (!$pdo instanceof PDO) {
+        $pdo = new PDO(
+            'pgsql:dbname=' . PBX_DB_NAME,
+            null,
+            null,
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_PERSISTENT => true,
+            ]
+        );
+    }
+    return $pdo;
+}
+
 /**
  * ODBC's default display width truncates long text. Encoding each JSON row in
  * short chunks keeps repository reads lossless without requiring a PDO driver.
  */
 function pbx_relational_json_rows(string $sql): array
 {
-    if (PHP_OS_FAMILY !== 'Windows' && extension_loaded('pdo_pgsql')) {
-        static $pdo = null;
-        if (!$pdo instanceof PDO) {
-            $pdo = new PDO(
-                'pgsql:dbname=' . PBX_DB_NAME,
-                null,
-                null,
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_PERSISTENT => true,
-                ]
-            );
-        }
+    $pdo = pbx_relational_pdo();
+    if ($pdo instanceof PDO) {
         $rows = $pdo->query($sql)->fetchAll();
         return is_array($rows) ? $rows : [];
     }
@@ -275,6 +284,51 @@ function pbx_relational_upsert_row(
     );
 }
 
+function pbx_relational_insert_rows(
+    string $name,
+    array $rows,
+    int $startPosition
+): void {
+    if ($name === 'departments' || !in_array($name, pbx_relational_stores(), true)) {
+        throw new InvalidArgumentException('Toplu ekleme desteklenmiyor: ' . $name);
+    }
+    if (!$rows) {
+        return;
+    }
+
+    $sql = ['BEGIN'];
+    foreach (array_values($rows) as $offset => $row) {
+        if (!is_array($row)) {
+            throw new InvalidArgumentException("{$name} toplu ekleme kaydı geçersiz");
+        }
+        $position = $startPosition + $offset;
+        $dept = (string) ($row['dept'] ?? 'genel');
+        $externalId = (string) ($row['id'] ?? '');
+        if ($externalId === '' && $name === 'extensions') {
+            $externalId = $dept . '-' . (string) ($row['exten'] ?? $position);
+        }
+        if ($dept === '' || $externalId === '') {
+            throw new RuntimeException("{$name} kaydında firma veya kimlik eksik");
+        }
+        pbx_relational_append_entity_sql(
+            $sql,
+            $name,
+            $dept,
+            $externalId,
+            null,
+            null,
+            null,
+            $position,
+            array_diff_key($row, ['id' => true, 'dept' => true])
+        );
+    }
+    $sql[] = 'COMMIT';
+    store_database_exec(
+        implode(";\n", $sql),
+        'İlişkisel yapılandırma kayıtları toplu eklenemedi: ' . $name
+    );
+}
+
 function pbx_relational_append_entity_sql(
     array &$sql,
     string $store,
@@ -411,4 +465,53 @@ function pbx_relational_write_departments(array $rows): void
     }
     $sql[] = 'COMMIT';
     store_database_exec(implode(";\n", $sql), 'Firma kayıtları veritabanına yazılamadı');
+}
+
+function pbx_extension_vm_pin_update(
+    string $extensionId,
+    string $dept,
+    string $pin,
+    string $actor = ''
+): void
+{
+    if ($extensionId === '' || $dept === '' || !preg_match('/^\d{4,12}$/', $pin)) {
+        throw new InvalidArgumentException('Geçersiz WebPhone şifre bilgisi');
+    }
+    if (!pbx_relational_enabled()) {
+        throw new RuntimeException('İlişkisel PBX veritabanı etkin değil');
+    }
+
+    $actor = substr($actor !== '' ? $actor : store_actor(), 0, 120);
+    $sql = [
+        'BEGIN',
+        'INSERT INTO pbx_config_values '
+            . '(dept_id, entity_id, field_name, value_type, text_value, updated_at) '
+            . 'SELECT e.dept_id, e.entity_id, ' . pbx_sql_literal('vm_pin') . ', '
+            . pbx_sql_literal('string') . ', ' . pbx_sql_literal($pin) . ', now() '
+            . 'FROM pbx_config_entities e WHERE e.store_name = '
+            . pbx_sql_literal('extensions') . ' AND e.external_id = '
+            . pbx_sql_literal($extensionId) . ' AND e.dept_id = ' . pbx_sql_literal($dept) . ' '
+            . 'ON CONFLICT (entity_id, field_name) WHERE position IS NULL AND map_key IS NULL '
+            . 'DO UPDATE SET value_type = EXCLUDED.value_type, text_value = EXCLUDED.text_value, '
+            . 'integer_value = NULL, number_value = NULL, boolean_value = NULL, updated_at = now()',
+        'UPDATE pbx_config_entities SET updated_at = now(), updated_by = '
+            . pbx_sql_literal($actor) . ' WHERE store_name = ' . pbx_sql_literal('extensions')
+            . ' AND external_id = ' . pbx_sql_literal($extensionId)
+            . ' AND dept_id = ' . pbx_sql_literal($dept),
+        'COMMIT',
+    ];
+    store_database_exec(implode(";\n", $sql), 'WebPhone şifresi güncellenemedi');
+
+    $verified = pbx_relational_json_rows(
+        'SELECT v.text_value AS pin FROM pbx_config_values v '
+        . 'JOIN pbx_config_entities e ON e.entity_id = v.entity_id AND e.dept_id = v.dept_id '
+        . 'WHERE e.store_name = ' . pbx_sql_literal('extensions')
+        . ' AND e.external_id = ' . pbx_sql_literal($extensionId)
+        . ' AND e.dept_id = ' . pbx_sql_literal($dept)
+        . ' AND v.field_name = ' . pbx_sql_literal('vm_pin')
+        . ' AND v.position IS NULL AND v.map_key IS NULL LIMIT 1'
+    );
+    if (!isset($verified[0]['pin']) || !hash_equals($pin, (string) $verified[0]['pin'])) {
+        throw new RuntimeException('WebPhone şifresi doğrulanamadı');
+    }
 }

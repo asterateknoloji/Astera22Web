@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/feature_codes.php';
+
 function ast_sanitize_id(string $value): string
 {
     return preg_replace('/[^A-Za-z0-9_-]/', '', $value) ?? '';
@@ -55,6 +57,11 @@ function extension_dial_channel(array $extension): string
 
 function member_channel(string $dept, string $extension): string
 {
+    $extension = normalize_group_member($extension);
+    if (group_member_is_external($extension)) {
+        $number = substr($extension, 0, -1);
+        return 'Local/' . $number . '@group-external-' . dept_code_of($dept) . '/n';
+    }
     $row = find_ext($dept, $extension);
     return $row ? extension_dial_channel($row) : '';
 }
@@ -448,7 +455,7 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-language=en
+language=tr
 transport=transport-udp
 
 [endpoint-webrtc](!)
@@ -458,7 +465,7 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-language=en
+language=tr
 webrtc=yes
 dtls_auto_generate_cert=yes
 rtcp_mux=yes
@@ -500,9 +507,9 @@ function generate_pjsip_endpoints(): string
         if (!in_array($dtmf, ['rfc4733', 'inband', 'info'], true)) {
             $dtmf = 'rfc4733';
         }
-        $lang = ast_sanitize_id((string) ($ext['language'] ?? 'en')) ?: 'en';
+        $lang = ast_sanitize_id((string) ($ext['language'] ?? 'tr')) ?: 'tr';
         $webrtc = !empty($ext['webrtc']);
-        $qualify = max(0, (int) ($ext['qualify'] ?? 0));
+        $qualify = max(0, (int) ($ext['qualify'] ?? 60));
         $grp = dept_group_no($dept);
         $mail = !empty($ext['vm_enabled']) ? "mailboxes={$num}@" . dept_code_of($dept) . "\n" : '';
         if ($webrtc) {
@@ -510,9 +517,14 @@ function generate_pjsip_endpoints(): string
             if (!is_array($codecs)) {
                 $codecs = ['alaw', 'ulaw'];
             }
-            if (!in_array('opus', $codecs, true)) {
-                array_unshift($codecs, 'opus');
-            }
+            // Stock/custom prompts are signed-linear audio. Some Asterisk
+            // installations can pass Opus through but cannot transcode prompts
+            // to Opus, so keep a narrow-band prompt codec ahead of Opus.
+            $codecs = array_values(array_filter(
+                $codecs,
+                static fn($codec): bool => strtolower((string) $codec) !== 'opus'
+            ));
+            $codecs[] = 'opus';
             $allow = codec_lines($codecs);
             $tmpl = 'endpoint-webrtc';
             $transportLine = '';
@@ -588,7 +600,7 @@ function generate_pjsip_trunks(): string
         $fromDomain = ast_quote((string) ($trunk['from_domain'] ?: $host));
         $fromUser = ast_quote((string) ($trunk['from_user'] ?: $user));
         $type = ($trunk['type'] ?? 'register') === 'peer' ? 'peer' : 'register';
-        $codecs = $trunk['codecs'] ?? ['ulaw', 'alaw', 'gsm', 'g726', 'g722'];
+        $codecs = $trunk['codecs'] ?? ['ulaw', 'alaw', 'gsm', 'g726', 'g729', 'g722'];
         if (!is_array($codecs) || !$codecs) {
             $codecs = ['ulaw', 'alaw'];
         }
@@ -615,21 +627,6 @@ function generate_pjsip_trunks(): string
         $trustIdInbound = !empty($trunk['trust_id_inbound']) ? 'yes' : 'no';
         $t38Udptl = !empty($trunk['t38_udptl']) ? 'yes' : 'no';
         $t38UdptlNat = !empty($trunk['t38_udptl_nat']) ? 'yes' : 'no';
-        if ($type === 'register') {
-            // 908503338008 pjsip_additional.conf master register trunk template.
-            $allow = 'ulaw,alaw,gsm,g726,g722';
-            $qualifyFrequency = 60;
-            $supportPath = 'no';
-            $dtmfMode = 'auto';
-            $directMedia = 'no';
-            $faxDetect = 'no';
-            $mediaEncryption = 'no';
-            $rewriteContact = 'yes';
-            $rtpSymmetric = 'yes';
-            $trustIdInbound = 'no';
-            $t38Udptl = 'no';
-            $t38UdptlNat = 'no';
-        }
 
         $out .= <<<CONF
 ;--- {$dept} trunk {$id} ---
@@ -681,9 +678,7 @@ CONF;
         }
         $authLines = $user !== '' ? "outbound_auth={$id}\n" : '';
         $fromUserLine = $fromUser !== '' ? "from_user={$fromUser}\n" : '';
-        $peerIdentityLines = $type === 'peer'
-            ? "send_pai=yes\nsend_rpid=yes\ntrust_id_outbound=yes\n"
-            : '';
+        $outboundIdentityLines = "send_pai=yes\nsend_rpid=yes\ntrust_id_outbound=yes\n";
         $legacyInboundMode = $type === 'peer' ? 'direct' : 'routes';
         $inboundMode = (string) ($trunk['inbound_mode'] ?? $legacyInboundMode);
         $inboundContext = $inboundMode === 'direct' ? ctx($dept, 'from') : 'from-pstn';
@@ -701,7 +696,7 @@ from_domain={$fromDomain}
 {$fromUserLine}media_encryption={$mediaEncryption}
 rewrite_contact={$rewriteContact}
 rtp_symmetric={$rtpSymmetric}
-{$peerIdentityLines}t38_udptl={$t38Udptl}
+{$outboundIdentityLines}t38_udptl={$t38Udptl}
 t38_udptl_ec=none
 t38_udptl_nat={$t38UdptlNat}
 transport=transport-udp
@@ -711,6 +706,81 @@ CONF;
         $out .= "\n";
     }
     return $any ? $out : "; ASTERA trunklar\n; (henüz trunk yok)\n";
+}
+
+function generate_takeover_dialplan(
+    string $deptId,
+    string $code,
+    string $intContext,
+    string $takeoverContext,
+    array $settings
+): array {
+    if (!feature_takeover_bool($settings['enabled'] ?? false)) {
+        return ['context' => '', 'features' => ''];
+    }
+    $prefix = ast_quote((string) ($settings['activation_prefix'] ?? '*88'));
+    $cancel = ast_quote((string) ($settings['cancel_code'] ?? '*89'));
+    $auth = "exten => s,1,Set(ASTERA_TAKEOVER_SOURCE=)\n";
+    $auth .= " same => n,Set(ASTERA_TAKEOVER_ENDPOINT=\${CHANNEL(endpoint)})\n";
+    $targets = [];
+    foreach (store_read('extensions') as $extension) {
+        if ((string) ($extension['dept'] ?? '') !== $deptId || extension_is_dahdi($extension)
+            || extension_is_custom($extension)) {
+            continue;
+        }
+        $number = preg_replace('/\D/', '', (string) ($extension['exten'] ?? '')) ?? '';
+        $endpoint = sip_user($extension);
+        if ($number === '' || $endpoint === '') continue;
+        $targets[$number] = true;
+        $auth .= " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_ENDPOINT}\"=\"{$endpoint}\"]?Set(ASTERA_TAKEOVER_SOURCE={$number}))\n";
+    }
+    $auth .= " same => n,Return()\n";
+
+    $features = '';
+    foreach (array_keys($targets) as $target) {
+        $activation = $prefix . $target;
+        $features .= "exten => {$activation},1,Answer()\n";
+        $features .= " same => n,Gosub({$takeoverContext},s,1)\n";
+        $features .= " same => n,GotoIf(\$[\"\${ASTERA_TAKEOVER_SOURCE}\"=\"\"]?invalid)\n";
+        $features .= " same => n,GotoIf(\$[\"\${ASTERA_TAKEOVER_SOURCE}\"=\"{$target}\"]?invalid)\n";
+        $features .= " same => n,GotoIf(\$[\"\${DB(TAKEOVER/{$code}/TARGET/\${ASTERA_TAKEOVER_SOURCE})}\"!=\"\"]?busy)\n";
+        $features .= " same => n,GotoIf(\$[\"\${DB(TAKEOVER/{$code}/OWNER/{$target})}\"!=\"\"]?busy)\n";
+        $features .= " same => n,Set(ASTERA_TAKEOVER_EXISTING=\${DB(TAKEOVER/{$code}/TARGET/{$target})})\n";
+        $features .= " same => n,GotoIf(\$[\"\${ASTERA_TAKEOVER_EXISTING}\"!=\"\" & \"\${ASTERA_TAKEOVER_EXISTING}\"!=\"\${ASTERA_TAKEOVER_SOURCE}\"]?busy)\n";
+        $features .= " same => n,Set(ASTERA_TAKEOVER_OLD_TARGET=\${DB_DELETE(TAKEOVER/{$code}/OWNER/\${ASTERA_TAKEOVER_SOURCE})})\n";
+        $features .= " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_OLD_TARGET}\"!=\"\"]?Set(ASTERA_TAKEOVER_CLEANUP=\${DB_DELETE(TAKEOVER/{$code}/TARGET/\${ASTERA_TAKEOVER_OLD_TARGET})}))\n";
+        $features .= " same => n,Set(DB(TAKEOVER/{$code}/OWNER/\${ASTERA_TAKEOVER_SOURCE})={$target})\n";
+        $features .= " same => n,Set(DB(TAKEOVER/{$code}/TARGET/{$target})=\${ASTERA_TAKEOVER_SOURCE})\n";
+        $features .= " same => n,Playback(beep)\n";
+        $features .= " same => n,Hangup()\n";
+        $features .= " same => n(busy),Playback(ss-noservice)\n";
+        $features .= " same => n,Hangup()\n";
+        $features .= " same => n(invalid),Playback(invalid)\n";
+        $features .= " same => n,Hangup()\n\n";
+    }
+    $features .= "exten => {$cancel},1,Answer()\n";
+    $features .= " same => n,Gosub({$takeoverContext},s,1)\n";
+    $features .= " same => n,GotoIf(\$[\"\${ASTERA_TAKEOVER_SOURCE}\"=\"\"]?invalid)\n";
+    $features .= " same => n,Set(ASTERA_TAKEOVER_OLD_TARGET=\${DB_DELETE(TAKEOVER/{$code}/OWNER/\${ASTERA_TAKEOVER_SOURCE})})\n";
+    $features .= " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_OLD_TARGET}\"!=\"\"]?Set(ASTERA_TAKEOVER_CLEANUP=\${DB_DELETE(TAKEOVER/{$code}/TARGET/\${ASTERA_TAKEOVER_OLD_TARGET})}))\n";
+    $features .= " same => n,Playback(beep)\n";
+    $features .= " same => n,Hangup()\n";
+    $features .= " same => n(invalid),Playback(invalid)\n";
+    $features .= " same => n,Hangup()\n\n";
+
+    return [
+        'context' => "[{$takeoverContext}]\n{$auth}\n",
+        'features' => $features,
+    ];
+}
+
+function takeover_call_init(string $code): string
+{
+    return "Set(__ASTERA_TAKEOVER_SOURCE=\${FILTER(0-9,\${CALLERID(num)})})\n"
+        . " same => n,Set(__ASTERA_TAKEOVER_TARGET=\${DB(TAKEOVER/{$code}/OWNER/\${ASTERA_TAKEOVER_SOURCE})})\n"
+        . " same => n,Set(__ASTERA_TAKEOVER_ACTIVE=\${IF(\$[\"\${ASTERA_TAKEOVER_TARGET}\"!=\"\"]?1:0)})\n"
+        . " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_ACTIVE}\"=\"1\"]?Set(CALLERID(num)=\${ASTERA_TAKEOVER_TARGET}))\n"
+        . " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_ACTIVE}\"=\"1\"]?Set(CALLERID(name)=\${ASTERA_TAKEOVER_TARGET}))\n";
 }
 
 function generate_extensions(): string
@@ -730,11 +800,23 @@ function generate_extensions(): string
         $inC = ctx($id, 'in');
         $feat = ctx($id, 'feat');
         $sub = ctx($id, 'sub');
+        $groupExternal = 'group-external-' . $code;
         $atxfer = 'atxfer-' . $code;
+        $takeoverContext = 'takeover-' . $code;
         $monDir = '/var/spool/asterisk/monitor/' . $code;
+        $takeoverSettings = feature_takeover_settings($id);
+        $takeoverEnabled = feature_takeover_bool($takeoverSettings['enabled'] ?? false);
+        $takeoverDialplan = generate_takeover_dialplan(
+            $id,
+            $code,
+            $int,
+            $takeoverContext,
+            $takeoverSettings
+        );
 
         $subBody = "exten => s,1,Set(CHANNEL(accountcode)={$code})\n";
         $subBody .= " same => n,Set(CDR(userfield)=\${IF(\$[\"\${ASTERA_TRANSFER_AUDIT}\" != \"\"]?\${ASTERA_TRANSFER_AUDIT}:{$code})})\n";
+        $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_TRANSFER_AUDIT}\" = \"\" & (\"\${ASTERA_CID_INBOUND}\" != \"\" | \"\${ASTERA_CID_DEST}\" != \"\")]?Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST}))\n";
         $subBody .= " same => n,Set(CDR(accountcode)={$code})\n";
         $subBody .= " same => n,Set(CDR(cnum)=\${CALLERID(num)})\n";
         $subBody .= " same => n,Set(CDR(cnam)=\${CALLERID(name)})\n";
@@ -773,9 +855,11 @@ function generate_extensions(): string
         $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_TRANSFER_NAME}\" != \"\"]?Set(CALLERID(name)=\${ASTERA_TRANSFER_NAME}))\n";
         $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_TRANSFER_DISPLAY}\" != \"\"]?Set(CONNECTEDLINE(num,i)=\${ASTERA_TRANSFER_DISPLAY}))\n";
         $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_TRANSFER_NAME}\" != \"\"]?Set(CONNECTEDLINE(name,i)=\${ASTERA_TRANSFER_NAME}))\n";
+        $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_ALERT_INFO}\" != \"\"]?Set(PJSIP_HEADER(add,Alert-Info)=\${ASTERA_ALERT_INFO}))\n";
         $subBody .= " same => n,Return()\n";
 
         $internal = '';
+        $defaultExtensionFallback = extension_default_fallback($id);
         foreach (store_read('extensions') as $ext) {
             if ((string) ($ext['dept'] ?? '') !== $id) {
                 continue;
@@ -789,7 +873,7 @@ function generate_extensions(): string
             }
             $ring = max(8, (int) ($ext['ringtime'] ?? 30));
             $vm = !empty($ext['vm_enabled']);
-            $language = ast_sanitize_id((string) ($ext['language'] ?? 'en')) ?: 'en';
+            $language = ast_sanitize_id((string) ($ext['language'] ?? 'tr')) ?: 'tr';
             $extensionRecord = array_key_exists('record', $ext) ? !empty($ext['record']) : $record;
             $extensionRecordFormat = strtolower((string) ($ext['record_format'] ?? 'wav'));
             if (!in_array($extensionRecordFormat, ['wav', 'gsm', 'ulaw'], true)) {
@@ -797,20 +881,33 @@ function generate_extensions(): string
             }
             $cidExt = ast_quote((string) ($ext['cid_num'] ?? ''));
             $fm = array_filter(array_map('trim', explode(',', (string) ($ext['followme'] ?? ''))));
-            $fallbackType = dest_allowed((string) ($ext['fallback_type'] ?? 'hangup'));
-            $fallbackDest = ast_sanitize_id((string) ($ext['fallback_dest'] ?? ''));
+            $fallbackType = dest_allowed((string) ($ext['fallback_type'] ?? $defaultExtensionFallback['type']));
+            $fallbackDest = ast_sanitize_id((string) ($ext['fallback_dest'] ?? $defaultExtensionFallback['dest']));
             $hasFallback = $fallbackType !== 'hangup' || $fallbackDest !== '';
             if (!$directChannel) {
                 $internal .= "exten => {$num},hint,PJSIP/{$sip}\n";
             }
-            $internal .= "exten => {$num},1,Set(ASTERA_RECORD_DEST={$num})\n";
-            $internal .= " same => n,Set(ASTERA_RECORD_ENABLED=" . ($extensionRecord ? '1' : '0') . ")\n";
+            if ($takeoverEnabled) {
+                $internal .= "exten => {$num},1," . takeover_call_init($code);
+                $internal .= " same => n,Set(ASTERA_TAKEOVER_DEST=\${DB(TAKEOVER/{$code}/TARGET/{$num})})\n";
+                $internal .= " same => n,GotoIf(\$[\"\${ASTERA_TAKEOVER_DEST}\"=\"\"]?takeover_continue)\n";
+                $internal .= " same => n,NoOp(Dahili {$num}, \${ASTERA_TAKEOVER_DEST} tarafindan devralindi)\n";
+                $internal .= " same => n,Goto({$int},\${ASTERA_TAKEOVER_DEST},1)\n";
+                $internal .= " same => n(takeover_continue),Set(ASTERA_RECORD_DEST={$num})\n";
+            } else {
+                $internal .= "exten => {$num},1,Set(ASTERA_RECORD_DEST={$num})\n";
+            }
+            $extensionRecordDefault = $extensionRecord ? '1' : '0';
+            $internal .= " same => n,Set(ASTERA_RECORD_ENABLED=\${IF(\$[\"\${ASTERA_INBOUND_RECORD}\" = \"\"]?{$extensionRecordDefault}:\${ASTERA_INBOUND_RECORD})})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_FORMAT={$extensionRecordFormat})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_DIRECTION=\${IF(\$[\"\${ASTERA_RECORD_DIRECTION}\" = \"\"]?dahili:\${ASTERA_RECORD_DIRECTION})})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_TYPE=dahili)\n";
             $internal .= " same => n,Set(ASTERA_RECORD_INTERNAL={$num})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_EXTERNAL=\${IF(\$[\"\${ASTERA_RECORD_EXTERNAL}\" = \"\"]?\${CALLERID(num)}:\${ASTERA_RECORD_EXTERNAL})})\n";
             $internal .= " same => n,Gosub({$sub},s,1)\n";
+            if ($takeoverEnabled) {
+                $internal .= " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_ACTIVE}\"=\"1\"]?Set(CDR(userfield)={$code}|TAKEOVER|\${ASTERA_TAKEOVER_SOURCE}|\${ASTERA_TAKEOVER_TARGET}))\n";
+            }
             $internal .= " same => n,Set(CHANNEL(language)={$language})\n";
             $internal .= " same => n,GotoIf(\$[\"\${DB(DND/{$code}/{$num})}\" = \"YES\"]?dnd)\n";
             $internal .= " same => n,Set(CF=\${DB(CF/{$code}/{$num})})\n";
@@ -861,6 +958,19 @@ function generate_extensions(): string
             $internal .= " same => n(cfwd),Goto({$int},\${CF},1)\n\n";
         }
 
+        foreach (store_read('ivrs') as $ivr) {
+            if ((string) ($ivr['dept'] ?? '') !== $id) {
+                continue;
+            }
+            $ivrExten = preg_replace('/\D/', '', (string) ($ivr['exten'] ?? '')) ?? '';
+            $ivrId = ast_sanitize_id((string) ($ivr['id'] ?? ''));
+            if ($ivrExten === '' || $ivrId === '') {
+                continue;
+            }
+            $internal .= "exten => {$ivrExten},1,NoOp(IVR {$ivrExten})\n";
+            $internal .= " same => n,Goto(ivr-{$ivrId},s,1)\n\n";
+        }
+
         foreach (store_read('queues') as $q) {
             if ((string) ($q['dept'] ?? '') !== $id) {
                 continue;
@@ -870,14 +980,15 @@ function generate_extensions(): string
             if ($num === '' || $qid === '') {
                 continue;
             }
-            $language = ast_sanitize_id((string) ($q['language'] ?? 'en')) ?: 'en';
+            $language = ast_sanitize_id((string) ($q['language'] ?? 'tr')) ?: 'tr';
             $queueRecord = array_key_exists('record', $q) ? !empty($q['record']) : $record;
             $queueRecordFormat = strtolower((string) ($q['record_format'] ?? 'wav'));
             if (!in_array($queueRecordFormat, ['wav', 'gsm', 'ulaw'], true)) {
                 $queueRecordFormat = 'wav';
             }
             $internal .= "exten => {$num},1,Set(ASTERA_RECORD_DEST={$num})\n";
-            $internal .= " same => n,Set(ASTERA_RECORD_ENABLED=" . ($queueRecord ? '1' : '0') . ")\n";
+            $queueRecordDefault = $queueRecord ? '1' : '0';
+            $internal .= " same => n,Set(ASTERA_RECORD_ENABLED=\${IF(\$[\"\${ASTERA_INBOUND_RECORD}\" = \"\"]?{$queueRecordDefault}:\${ASTERA_INBOUND_RECORD})})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_FORMAT={$queueRecordFormat})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_DIRECTION=\${IF(\$[\"\${ASTERA_RECORD_DIRECTION}\" = \"\"]?dahili:\${ASTERA_RECORD_DIRECTION})})\n";
             $internal .= " same => n,Set(ASTERA_RECORD_TYPE=queue)\n";
@@ -885,6 +996,15 @@ function generate_extensions(): string
             $internal .= " same => n,Set(ASTERA_RECORD_EXTERNAL=\${IF(\$[\"\${ASTERA_RECORD_EXTERNAL}\" = \"\"]?\${CALLERID(num)}:\${ASTERA_RECORD_EXTERNAL})})\n";
             $internal .= " same => n,Gosub({$sub},s,1)\n";
             $internal .= " same => n,Set(CHANNEL(language)={$language})\n";
+            $cidPrefix = (string) ($q['cid_prefix'] ?? '');
+            if ($cidPrefix !== '') {
+                $safeCid = ast_quote($cidPrefix);
+                $safeCidAudit = ast_quote(str_replace('|', '/', $cidPrefix));
+                $internal .= " same => n,Set(__ASTERA_CID_DEST_TYPE=QUEUE)\n";
+                $internal .= " same => n,Set(__ASTERA_CID_DEST={$safeCidAudit})\n";
+                $internal .= " same => n,Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST})\n";
+                $internal .= " same => n,Set(CALLERID(name)={$safeCid}\${CALLERID(name)})\n";
+            }
             $internal .= " same => n,Answer()\n";
             $announce = ast_quote((string) ($q['announce'] ?? ''));
             if ($announce !== '') {
@@ -930,19 +1050,36 @@ function generate_extensions(): string
             if ($num === '') {
                 continue;
             }
-            $sips = [];
-            foreach ((array) ($g['members'] ?? []) as $member) {
-                $channel = member_channel($id, (string) $member);
-                if ($channel !== '') {
-                    $sips[] = $channel;
+            $memberPriorities = [];
+            foreach ((array) ($g['member_priorities'] ?? []) as $key => $priorityRow) {
+                if (is_array($priorityRow)) {
+                    $priorityMember = normalize_group_member((string) ($priorityRow['member'] ?? ''));
+                    if ($priorityMember !== '') {
+                        $memberPriorities[$priorityMember] = max(1, min(99, (int) ($priorityRow['priority'] ?? 1)));
+                    }
+                } elseif ((string) $key !== '') {
+                    $memberPriorities[(string) $key] = max(1, min(99, (int) $priorityRow));
                 }
             }
-            if (!$sips) {
+            $ringMembers = [];
+            foreach (array_values((array) ($g['members'] ?? [])) as $memberIndex => $member) {
+                $member = normalize_group_member((string) $member);
+                $channel = member_channel($id, $member);
+                if ($channel !== '') {
+                    $ringMembers[] = [
+                        'member' => $member,
+                        'channel' => $channel,
+                        'priority' => (int) ($memberPriorities[$member] ?? 1),
+                        'index' => $memberIndex,
+                    ];
+                }
+            }
+            if (!$ringMembers) {
                 continue;
             }
             
             $ringTime = max(5, (int) ($g['ring_time'] ?? 20));
-            $language = ast_sanitize_id((string) ($g['language'] ?? 'en')) ?: 'en';
+            $language = ast_sanitize_id((string) ($g['language'] ?? 'tr')) ?: 'tr';
             $confirmCalls = !empty($g['confirm_calls']);
             $announcement = ast_quote((string) ($g['announcement'] ?? ''));
             $musicClass = ast_quote((string) ($g['music_class'] ?? ''));
@@ -965,19 +1102,25 @@ function generate_extensions(): string
             $internal .= " same => n,Set(ASTERA_RECORD_EXTERNAL=\${IF(\$[\"\${ASTERA_RECORD_EXTERNAL}\" = \"\"]?\${CALLERID(num)}:\${ASTERA_RECORD_EXTERNAL})})\n";
             $internal .= " same => n,Gosub({$sub},s,1)\n";
             $internal .= " same => n,Set(CHANNEL(language)={$language})\n";
-            if ($ringRecord) {
-                $internal .= " same => n,Set(ASTERA_RECORD_INTERNAL=\${FILTER(0-9A-Za-z_,\${ASTERA_RECORD_INTERNAL})})\n";
-                $internal .= " same => n,Set(ASTERA_RECORD_EXTERNAL=\${FILTER(0-9A-Za-z_,\${ASTERA_RECORD_EXTERNAL})})\n";
-                $internal .= " same => n,Set(ASTERA_MON_DIR={$monDir}/\${STRFTIME(\${EPOCH},,%Y)}/\${STRFTIME(\${EPOCH},,%m)}/\${STRFTIME(\${EPOCH},,%d)})\n";
-                $internal .= " same => n,System(/bin/mkdir -p \${ASTERA_MON_DIR})\n";
-                $internal .= " same => n,Set(ASTERA_RECORD_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-yon_\${ASTERA_RECORD_DIRECTION}-tip_ringgroup-dahili_\${ASTERA_RECORD_INTERNAL}-numara_\${ASTERA_RECORD_EXTERNAL}-uid_\${UNIQUEID}.{$recordFormat})\n";
-                $internal .= " same => n,Set(CDR(recordingfile)=\${STRFTIME(\${EPOCH},,%Y)}/\${STRFTIME(\${EPOCH},,%m)}/\${STRFTIME(\${EPOCH},,%d)}/\${ASTERA_RECORD_FILE})\n";
-                $internal .= " same => n,MixMonitor(\${ASTERA_MON_DIR}/\${ASTERA_RECORD_FILE},b)\n";
-            }
+            $ringRecordDefault = $ringRecord ? '1' : '0';
+            $internal .= " same => n,Set(ASTERA_RECORD_ENABLED=\${IF(\$[\"\${ASTERA_INBOUND_RECORD}\" = \"\"]?{$ringRecordDefault}:\${ASTERA_INBOUND_RECORD})})\n";
+            $internal .= " same => n,GotoIf(\$[\"\${ASTERA_RECORD_ENABLED}\" != \"1\"]?ringrecorddone)\n";
+            $internal .= " same => n,Set(ASTERA_RECORD_INTERNAL=\${FILTER(0-9A-Za-z_,\${ASTERA_RECORD_INTERNAL})})\n";
+            $internal .= " same => n,Set(ASTERA_RECORD_EXTERNAL=\${FILTER(0-9A-Za-z_,\${ASTERA_RECORD_EXTERNAL})})\n";
+            $internal .= " same => n,Set(ASTERA_MON_DIR={$monDir}/\${STRFTIME(\${EPOCH},,%Y)}/\${STRFTIME(\${EPOCH},,%m)}/\${STRFTIME(\${EPOCH},,%d)})\n";
+            $internal .= " same => n,System(/bin/mkdir -p \${ASTERA_MON_DIR})\n";
+            $internal .= " same => n,Set(ASTERA_RECORD_FILE=\${STRFTIME(\${EPOCH},,%Y%m%d-%H%M%S)}-yon_\${ASTERA_RECORD_DIRECTION}-tip_ringgroup-dahili_\${ASTERA_RECORD_INTERNAL}-numara_\${ASTERA_RECORD_EXTERNAL}-uid_\${UNIQUEID}.{$recordFormat})\n";
+            $internal .= " same => n,Set(CDR(recordingfile)=\${STRFTIME(\${EPOCH},,%Y)}/\${STRFTIME(\${EPOCH},,%m)}/\${STRFTIME(\${EPOCH},,%d)}/\${ASTERA_RECORD_FILE})\n";
+            $internal .= " same => n,MixMonitor(\${ASTERA_MON_DIR}/\${ASTERA_RECORD_FILE},b)\n";
+            $internal .= " same => n(ringrecorddone),NoOp(Ring grup kayit tercihi uygulandi)\n";
             
             // CID prefix
             if ($cidPrefix !== '') {
                 $safeCid = ast_quote($cidPrefix);
+                $safeCidAudit = ast_quote(str_replace('|', '/', $cidPrefix));
+                $internal .= " same => n,Set(__ASTERA_CID_DEST_TYPE=RINGGROUP)\n";
+                $internal .= " same => n,Set(__ASTERA_CID_DEST={$safeCidAudit})\n";
+                $internal .= " same => n,Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST})\n";
                 $internal .= " same => n,Set(CALLERID(name)={$safeCid}\${CALLERID(name)})\n";
             }
             
@@ -1003,25 +1146,38 @@ function generate_extensions(): string
                 $dialOpts .= 'j';
             }
             
-            // Dial strategy
+            usort($ringMembers, static function (array $left, array $right): int {
+                $priorityCompare = ((int) $left['priority']) <=> ((int) $right['priority']);
+                return $priorityCompare !== 0
+                    ? $priorityCompare
+                    : ((int) $left['index']) <=> ((int) $right['index']);
+            });
+
+            // Dial strategy: priority first, manual line order second.
             if (($g['strategy'] ?? 'ringall') === 'hunt') {
-                // Hunt: try each member sequentially
-                foreach ($sips as $idx => $target) {
-                    $internal .= " same => n,Dial({$target},{$ringTime},{$dialOpts})\n";
+                foreach ($ringMembers as $ringMember) {
+                    $internal .= " same => n,Dial({$ringMember['channel']},{$ringTime},{$dialOpts})\n";
                     $internal .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" = \"ANSWER\"]?answered)\n";
                 }
             } else {
-                // Ringall: call all members simultaneously
-                $internal .= ' same => n,Dial(' . implode('&', $sips) . ",{$ringTime},{$dialOpts})\n";
+                $priorityGroups = [];
+                foreach ($ringMembers as $ringMember) {
+                    $priorityGroups[(int) $ringMember['priority']][] = (string) $ringMember['channel'];
+                }
+                ksort($priorityGroups, SORT_NUMERIC);
+                foreach ($priorityGroups as $targets) {
+                    $internal .= ' same => n,Dial(' . implode('&', $targets) . ",{$ringTime},{$dialOpts})\n";
+                    $internal .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" = \"ANSWER\"]?answered)\n";
+                }
             }
             
             // Check timeout destination
             $rgType = dest_allowed((string) ($g['timeout_type'] ?? 'hangup'));
             $rgDest = ast_sanitize_id((string) ($g['timeout_dest'] ?? ''));
+            $internal .= " same => n,Goto(rgto)\n";
+            $internal .= " same => n(answered),Hangup()\n";
+            $internal .= " same => n(rgto),NoOp(ring timeout: \${DIALSTATUS})\n";
             if ($rgType !== 'hangup' || $rgDest !== '') {
-                $internal .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" != \"ANSWER\"]?rgto)\n";
-                $internal .= " same => n(answered),Hangup()\n";
-                $internal .= " same => n(rgto),NoOp(ring timeout: \${DIALSTATUS})\n";
                 $internal .= dest_goto($id, $rgType, $rgDest, $int);
             } else {
                 $internal .= " same => n,Hangup()\n";
@@ -1107,12 +1263,61 @@ function generate_extensions(): string
         $outboundRouteContexts = '';
         $outboundRoutePriority = 0;
         $outboundRouteBlocks = [];
-        foreach (store_read('outbound') as $route) {
+        $expandedOutboundRoutes = [];
+        foreach (store_read('outbound') as $storedRoute) {
+            $routePatterns = is_array($storedRoute['patterns'] ?? null)
+                ? $storedRoute['patterns']
+                : [];
+            if (!$routePatterns) {
+                $routePatterns = [[
+                    'match' => (string) ($storedRoute['pattern'] ?? ''),
+                    'prepend' => (string) ($storedRoute['prefix'] ?? ''),
+                    'prefix' => '',
+                    'caller_id' => '',
+                    'strip_count' => max(0, (int) ($storedRoute['strip'] ?? 0)),
+                ]];
+            }
+            foreach ($routePatterns as $routePattern) {
+                if (!is_array($routePattern)) {
+                    continue;
+                }
+                $match = ast_dial_pattern((string) ($routePattern['match'] ?? $routePattern['pattern'] ?? ''));
+                if ($match === '') {
+                    continue;
+                }
+                $dialPrefix = preg_replace('/\D/', '', (string) ($routePattern['prefix'] ?? '')) ?? '';
+                $matchBody = str_starts_with($match, '_') ? substr($match, 1) : $match;
+                $combinedPattern = $dialPrefix . $matchBody;
+                if (preg_match('/[XZN.!\[]/', $combinedPattern) === 1) {
+                    $combinedPattern = '_' . $combinedPattern;
+                }
+                $expandedRoute = $storedRoute;
+                $expandedRoute['pattern'] = $combinedPattern;
+                $expandedRoute['strip'] = $dialPrefix !== ''
+                    ? strlen($dialPrefix)
+                    : max(0, (int) ($routePattern['strip_count'] ?? $storedRoute['strip'] ?? 0));
+                $expandedRoute['prefix'] = preg_replace(
+                    '/\D/',
+                    '',
+                    (string) ($routePattern['prepend'] ?? $storedRoute['prefix'] ?? '')
+                ) ?? '';
+                $expandedRoute['caller_pattern'] = ast_dial_pattern((string) ($routePattern['caller_id'] ?? ''));
+                $expandedOutboundRoutes[] = $expandedRoute;
+            }
+        }
+        foreach ($expandedOutboundRoutes as $route) {
             if ((string) ($route['dept'] ?? '') !== $id) {
                 continue;
             }
             $pattern = ast_dial_pattern((string) ($route['pattern'] ?? ''));
-            $trunk = ast_sanitize_id((string) ($route['trunk'] ?? ''));
+            $trunkIds = is_array($route['trunks'] ?? null)
+                ? array_values(array_unique(array_filter(array_map(
+                    static fn($item): string => ast_sanitize_id((string) $item),
+                    $route['trunks']
+                ))))
+                : [ast_sanitize_id((string) ($route['trunk'] ?? ''))];
+            $trunkIds = array_values(array_filter($trunkIds));
+            $trunk = (string) ($trunkIds[0] ?? '');
             $routeId = ast_sanitize_id((string) ($route['id'] ?? ''));
             if ($pattern === '' || $trunk === '' || $routeId === '') {
                 continue;
@@ -1124,8 +1329,16 @@ function generate_extensions(): string
             if ($prefix !== '') {
                 $dialnum = $prefix . $dialnum;
             }
+            $callerPattern = ast_dial_pattern((string) ($route['caller_pattern'] ?? ''));
+            $extensionPattern = $pattern . ($callerPattern !== '' ? '/' . $callerPattern : '');
             $routeStart = strlen($outbound);
-            $outbound .= "exten => {$pattern},1,Set(ASTERA_OUTBOUND_AUTH_EXT=\${IF(\$[\"\${ASTERA_FALLBACK_FROM}\" != \"\"]?\${ASTERA_FALLBACK_FROM}:\${CALLERID(num)})})\n";
+            if ($takeoverEnabled) {
+                $outbound .= "exten => {$extensionPattern},1," . takeover_call_init($code);
+                $outbound .= " same => n,Set(ASTERA_OUTBOUND_AUTH_EXT=\${IF(\$[\"\${ASTERA_FALLBACK_FROM}\" != \"\"]?\${ASTERA_FALLBACK_FROM}:\${CALLERID(num)})})\n";
+            } else {
+                $outbound .= "exten => {$extensionPattern},1,Set(ASTERA_OUTBOUND_AUTH_EXT=\${IF(\$[\"\${ASTERA_FALLBACK_FROM}\" != \"\"]?\${ASTERA_FALLBACK_FROM}:\${CALLERID(num)})})\n";
+            }
+            $outbound .= " same => n,GotoIf(\$[\"\${ASTERA_GROUP_EXTERNAL}\"=\"1\"]?outbound_allowed)\n";
             $outbound .= " same => n,GotoIf(\$[\"\${DB(OUTBOUND/{$code}/\${ASTERA_OUTBOUND_AUTH_EXT}/{$routeId})}\" = \"1\"]?outbound_allowed)\n";
             $outbound .= " same => n,__ASTERA_NEXT_OUTBOUND_ROUTE__\n";
             $outbound .= " same => n(outbound_allowed),Set(OUTNUM={$dialnum})\n";
@@ -1142,6 +1355,9 @@ function generate_extensions(): string
             $outbound .= " same => n,Set(ASTERA_RECORD_ENABLED=\${DB(REC/{$code}/\${CALLERID(num)})})\n";
             $outbound .= " same => n,Set(ASTERA_RECORD_FORMAT=\${DB(RECFMT/{$code}/\${CALLERID(num)})})\n";
             $outbound .= " same => n,Gosub({$sub},s,1)\n";
+            if ($takeoverEnabled) {
+                $outbound .= " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_ACTIVE}\"=\"1\"]?Set(CDR(userfield)={$code}|TAKEOVER|\${ASTERA_TAKEOVER_SOURCE}|\${ASTERA_TAKEOVER_TARGET}))\n";
+            }
             $outbound .= " same => n,ExecIf(\$[\"\${ASTERA_FALLBACK_TYPE}\" = \"external\"]?Set(CDR(userfield)={$code}|FALLBACK_EXTERNAL|\${ASTERA_FALLBACK_FROM}|\${ASTERA_FALLBACK_DEST}|\${ASTERA_FALLBACK_REASON}))\n";
             $outbound .= " same => n,Set(__ASTERA_TRANSFER_DISPLAY=\${OUTNUM})\n";
             $outbound .= " same => n,Set(ASTERA_TRANSFER_CRM_NUM=\${IF(\$[\${LEN(\${OUTNUM})}=12 & \"\${OUTNUM:0:2}\"=\"90\"]?\${OUTNUM:2}:\${OUTNUM})})\n";
@@ -1165,25 +1381,80 @@ function generate_extensions(): string
                 }
             } else {
                 $trunkType = (string) ($trunkRow['type'] ?? 'register');
-                $trunkCid = pstn_digits((string) (($trunkRow['from_user'] ?? '') ?: ($trunkRow['username'] ?? '')));
+                $trunkCid = pstn_digits((string) ($trunkRow['outbound_caller_id'] ?? ''));
+                if ($trunkCid === '') {
+                    $trunkCid = pstn_digits((string) (($trunkRow['from_user'] ?? '') ?: ($trunkRow['username'] ?? '')));
+                }
                 if ($trunkCid === '') {
                     $trunkCid = pstn_digits($cid);
                 }
-                if ($trunkType !== 'peer' && $trunkCid !== '') {
+                $cidOption = (string) ($trunkRow['cid_option'] ?? ($trunkType === 'peer' ? 'allow_any' : 'force_trunk'));
+                if (!in_array($cidOption, ['allow_any', 'block_foreign', 'remove_cnam', 'force_trunk'], true)) {
+                    $cidOption = 'force_trunk';
+                }
+                if ($cidOption === 'force_trunk' && $trunkCid !== '') {
                     $outbound .= " same => n,Set(CALLERID(num)={$trunkCid})\n";
+                } elseif ($cidOption === 'remove_cnam') {
+                    $outbound .= " same => n,Set(CALLERID(name)=)\n";
+                } elseif ($cidOption === 'block_foreign') {
+                    $allowedCids = [$trunkCid, pstn_digits($cid)];
+                    foreach (store_read('extensions') as $extension) {
+                        if ((string) ($extension['dept'] ?? '') === $id) {
+                            $allowedCids[] = pstn_digits((string) ($extension['cid_num'] ?? ''));
+                        }
+                    }
+                    foreach (store_read('inbound') as $inboundRoute) {
+                        if ((string) ($inboundRoute['dept'] ?? '') === $id) {
+                            $allowedCids[] = pstn_digits((string) ($inboundRoute['did'] ?? ''));
+                        }
+                    }
+                    $allowedCids = array_values(array_unique(array_filter($allowedCids)));
+                    $outbound .= " same => n,Set(ASTERA_CID_CHECK=\${FILTER(0-9,\${CALLERID(num)})})\n";
+                    $outbound .= " same => n,Set(ASTERA_CID_ALLOWED=0)\n";
+                    foreach ($allowedCids as $allowedCid) {
+                        $outbound .= " same => n,ExecIf(\$[\"\${ASTERA_CID_CHECK}\"=\"{$allowedCid}\"]?Set(ASTERA_CID_ALLOWED=1))\n";
+                    }
+                    $outbound .= " same => n,GotoIf(\$[\"\${ASTERA_CID_ALLOWED}\"=\"1\"]?cid_allowed)\n";
+                    $outbound .= " same => n,Playback(ss-noservice)\n";
+                    $outbound .= " same => n,Hangup()\n";
+                    $outbound .= " same => n(cid_allowed),NoOp(Giden CID izinli: \${ASTERA_CID_CHECK})\n";
                 }
             }
             $outbound .= " same => n,NoOp(Giden {$code} {$name})\n";
-            if ($priSpan && !empty($priSpan['enabled']) && (string) ($priSpan['dept'] ?? '') === $id) {
-                $group = max(0, min(63, (int) ($priSpan['group'] ?? 1)));
-                $dialOptions = !empty($priSpan['denoise'])
-                    ? 'tTU(astera-pri-denoise)'
-                    : 'tT';
-                $outbound .= " same => n,Dial(DAHDI/g{$group}/\${OUTNUM},60,{$dialOptions})\n";
+            $dialLine = static function (string $trunkId) use ($id): string {
+                $candidateSpan = find_by('pri_spans', 'id', $trunkId);
+                if ($candidateSpan && !empty($candidateSpan['enabled'])
+                    && (string) ($candidateSpan['dept'] ?? '') === $id) {
+                    $group = max(0, min(63, (int) ($candidateSpan['group'] ?? 1)));
+                    $dialOptions = !empty($candidateSpan['denoise'])
+                        ? 'tTU(astera-pri-denoise)'
+                        : 'tT';
+                    return "Dial(DAHDI/g{$group}/\${OUTNUM},60,{$dialOptions})";
+                }
+                return "Dial(PJSIP/\${OUTNUM}@{$trunkId},60,tT)";
+            };
+            if (!empty($route['equal_distribution']) && count($trunkIds) > 1) {
+                $rrKey = 'OUTRR/' . $code . '/' . $routeId;
+                $outbound .= " same => n,Set(ASTERA_RR_INDEX=\${IF(\$[\"\${DB({$rrKey})}\"=\"\"]?0:\${DB({$rrKey})})})\n";
+                $outbound .= ' same => n,Set(DB(' . $rrKey . ')=$[(${ASTERA_RR_INDEX}+1)%'
+                    . count($trunkIds) . "])\n";
+                foreach ($trunkIds as $trunkIndex => $_trunkId) {
+                    $outbound .= " same => n,GotoIf(\$[\${ASTERA_RR_INDEX}={$trunkIndex}]?rr_trunk_{$trunkIndex})\n";
+                }
+                $outbound .= " same => n,Goto(rr_trunk_0)\n";
+                foreach ($trunkIds as $trunkIndex => $trunkId) {
+                    $outbound .= " same => n(rr_trunk_{$trunkIndex})," . $dialLine($trunkId) . "\n";
+                    $outbound .= " same => n,Goto(outbound_done)\n";
+                }
             } else {
-                $outbound .= " same => n,Dial(PJSIP/\${OUTNUM}@{$trunk},60,tT)\n";
+                foreach ($trunkIds as $trunkIndex => $trunkId) {
+                    $outbound .= " same => n," . $dialLine($trunkId) . "\n";
+                    if ($trunkIndex < count($trunkIds) - 1) {
+                        $outbound .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\"=\"ANSWER\"]?outbound_done)\n";
+                    }
+                }
             }
-            $outbound .= " same => n,Hangup()\n\n";
+            $outbound .= " same => n(outbound_done),Hangup()\n\n";
             $outbound .= "exten => h,1,NoOp(Kontrollu transfer gecici bilgisi temizleniyor)\n";
             $outbound .= " same => n,NoOp(\${DB_DELETE(ATXFER/\${CHANNEL(linkedid)})})\n";
             $outbound .= " same => n,NoOp(\${DB_DELETE(ATXFERNAME/\${CHANNEL(linkedid)})})\n\n";
@@ -1221,19 +1492,59 @@ function generate_extensions(): string
         }
 
         $inbound = '';
-        foreach (store_read('inbound') as $route) {
-            if ((string) ($route['dept'] ?? '') !== $id) {
-                continue;
-            }
-            $did = ast_quote((string) ($route['did'] ?? '_X.'));
+        $inboundRoutes = array_values(array_filter(
+            store_read('inbound'),
+            static fn(array $route): bool => (string) ($route['dept'] ?? '') === $id
+        ));
+        usort($inboundRoutes, static function (array $left, array $right): int {
+            $priority = ((int) ($left['priority'] ?? 100)) <=> ((int) ($right['priority'] ?? 100));
+            return $priority !== 0
+                ? $priority
+                : strcmp((string) ($left['id'] ?? ''), (string) ($right['id'] ?? ''));
+        });
+        foreach ($inboundRoutes as $route) {
+            $did = ast_dial_pattern((string) ($route['did'] ?? '_X.'));
+            $callerId = ast_dial_pattern((string) ($route['caller_id'] ?? ''));
+            $extensionKey = $did . ($callerId !== '' ? '/' . $callerId : '');
             $destType = (string) ($route['dest_type'] ?? 'extension');
             $dest = ast_sanitize_id((string) ($route['dest'] ?? ''));
             $name = ast_quote((string) ($route['name'] ?? $did));
             if ($did === '' || ($dest === '' && $destType !== 'hangup')) {
                 continue;
             }
-            $inbound .= "exten => {$did},1,NoOp(Gelen {$code} {$name})\n";
+            $language = ast_sanitize_id((string) ($route['language'] ?? 'tr')) ?: 'tr';
+            $musicClass = ast_sanitize_id((string) ($route['musicclass'] ?? $code)) ?: $code;
+            $cidPrefix = ast_quote((string) ($route['cid_prefix'] ?? ''));
+            $alertInfo = ast_quote((string) ($route['alert_info'] ?? ''));
+            $pause = max(0, min(30, (int) ($route['pause_before_answer'] ?? 0)));
+            $recordMode = (string) ($route['record_mode'] ?? 'inherit');
+            $recordValue = $recordMode === 'force' ? '1' : ($recordMode === 'off' ? '0' : '');
+            $privacyManager = !empty($route['privacy_manager']);
+            $inbound .= "exten => {$extensionKey},1,NoOp(Gelen {$code} {$name})\n";
+            $inbound .= " same => n,Set(CHANNEL(language)={$language})\n";
+            $inbound .= " same => n,Set(CHANNEL(musicclass)={$musicClass})\n";
+            $inbound .= " same => n,Set(__ASTERA_ALERT_INFO={$alertInfo})\n";
+            $inbound .= " same => n,Set(__ASTERA_INBOUND_RECORD={$recordValue})\n";
+            if ($cidPrefix !== '') {
+                $cidPrefixAudit = ast_quote(str_replace('|', '/', (string) ($route['cid_prefix'] ?? '')));
+                $inbound .= " same => n,Set(__ASTERA_CID_INBOUND={$cidPrefixAudit})\n";
+                $inbound .= " same => n,Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST})\n";
+                $inbound .= " same => n,Set(CALLERID(name)={$cidPrefix}\${CALLERID(name)})\n";
+            }
+            if ($privacyManager) {
+                $inbound .= " same => n,PrivacyManager()\n";
+                $inbound .= " same => n,GotoIf(\$[\"\${PRIVACYMGRSTATUS}\" = \"FAILED\"]?privacyfailed)\n";
+            }
+            if (!empty($route['signal_ringing'])) {
+                $inbound .= " same => n,Ringing()\n";
+            }
+            if ($pause > 0) {
+                $inbound .= " same => n,Wait({$pause})\n";
+            }
             $inbound .= dest_goto($id, $destType, $dest, $int);
+            if ($privacyManager) {
+                $inbound .= " same => n(privacyfailed),Hangup()\n";
+            }
         }
         if ($inbound === '') {
             $inbound = "exten => _X.,1,NoOp({$code} gelen kural yok)\n same => n,Hangup()\n";
@@ -1251,6 +1562,7 @@ function generate_extensions(): string
 ;========== firma {$code} — diğer firmalara include YOK ==========
 [{$sub}]
 {$subBody}
+{$takeoverDialplan['context']}
 [{$from}]
 include => {$int}
 include => {$outC}
@@ -1313,12 +1625,18 @@ exten => *411,1,Answer()
 exten => {$parkExt},1,Park(parking-{$code})
  same => n,Hangup()
 
+{$takeoverDialplan['features']}
 {$featExtra}
 [{$outC}]
 {$outbound}
 {$outboundRouteContexts}
 [{$inC}]
 {$inbound}
+[{$groupExternal}]
+exten => _X.,1,NoOp(Kuyruk/ring grup dis hat uyesi \${EXTEN})
+ same => n,Set(__ASTERA_GROUP_EXTERNAL=1)
+ same => n,Goto({$outC},\${EXTEN},1)
+
 [{$atxfer}]
 exten => _X.,1,NoOp(Kontrollu transfer hedefi \${EXTEN})
  same => n,Set(ASTERA_TRANSFER_CACHE_KEY=\${CHANNEL(linkedid)})
@@ -1433,10 +1751,23 @@ function generate_queues(): string
         }
         $out .= "announce-to-first-user=" . (!empty($q['announce_to_first_user']) ? 'yes' : 'no') . "\n";
         $out .= "reportholdtime=" . (!empty($q['reportholdtime']) ? 'yes' : 'no') . "\n";
+        $memberPenalties = [];
+        foreach ((array) ($q['member_penalties'] ?? []) as $key => $penaltyRow) {
+            if (is_array($penaltyRow)) {
+                $penaltyMember = preg_replace('/\D/', '', (string) ($penaltyRow['member'] ?? '')) ?? '';
+                if ($penaltyMember !== '') {
+                    $memberPenalties[$penaltyMember] = max(1, min(99, (int) ($penaltyRow['penalty'] ?? 1)));
+                }
+            } elseif ((string) $key !== '') {
+                $memberPenalties[(string) $key] = max(1, min(99, (int) $penaltyRow));
+            }
+        }
         foreach ((array) ($q['members'] ?? []) as $member) {
-            $channel = member_channel($dept, (string) $member);
+            $member = (string) $member;
+            $channel = member_channel($dept, $member);
             if ($channel !== '') {
-                $out .= "member => {$channel}\n";
+                $penalty = (int) ($memberPenalties[$member] ?? 1);
+                $out .= "member => {$channel},{$penalty}\n";
             }
         }
         $out .= "\n";
@@ -1495,9 +1826,11 @@ function generate_app_contexts(string $deptId, string $code, string $intCtx): st
             continue;
         }
         $sound = ast_quote((string) ($ivr['sound'] ?? 'hello-world')) ?: 'hello-world';
-        $language = ast_sanitize_id((string) ($ivr['language'] ?? 'en')) ?: 'en';
+        $language = ast_sanitize_id((string) ($ivr['language'] ?? 'tr')) ?: 'tr';
         $timeoutType = (string) ($ivr['timeout_type'] ?? 'hangup');
         $timeoutDest = ast_sanitize_id((string) ($ivr['timeout_dest'] ?? ''));
+        $invalidType = (string) ($ivr['invalid_type'] ?? 'repeat');
+        $invalidDest = ast_sanitize_id((string) ($ivr['invalid_dest'] ?? ''));
         $ctx = 'ivr-' . $iid;
         $out .= "[{$ctx}]\n";
         $out .= "exten => s,1,Answer()\n";
@@ -1509,8 +1842,8 @@ function generate_app_contexts(string $deptId, string $code, string $intCtx): st
         $digits = $ivr['digits'] ?? [];
         if (is_array($digits)) {
             foreach ($digits as $digit => $info) {
-                $digit = ast_sanitize_id((string) $digit);
-                if ($digit === '') {
+                $digit = trim((string) $digit);
+                if (!preg_match('/^[0-9*#]{1,4}$/', $digit)) {
                     continue;
                 }
                 $t = (string) ($info['type'] ?? 'hangup');
@@ -1542,7 +1875,12 @@ function generate_app_contexts(string $deptId, string $code, string $intCtx): st
                 $out .= "exten => {$extensionNumber},1,Goto({$intCtx},{$extensionNumber},1)\n";
             }
         }
-        $out .= "exten => i,1,Playback(invalid)\n same => n,Goto(s,loop)\n";
+        $out .= "exten => i,1,Playback(invalid)\n";
+        if ($invalidType === 'repeat') {
+            $out .= " same => n,Goto(s,loop)\n";
+        } else {
+            $out .= dest_goto($deptId, $invalidType, $invalidDest, $intCtx);
+        }
         $out .= "exten => t,1,NoOp(IVR timeout)\n";
         $out .= dest_goto($deptId, $timeoutType, $timeoutDest, $intCtx);
         $out .= "\n";
@@ -1640,7 +1978,7 @@ function generate_app_contexts(string $deptId, string $code, string $intCtx): st
             continue;
         }
         $sound = ast_quote((string) ($ann['sound'] ?? 'hello-world')) ?: 'hello-world';
-        $language = ast_sanitize_id((string) ($ann['language'] ?? 'en')) ?: 'en';
+        $language = ast_sanitize_id((string) ($ann['language'] ?? 'tr')) ?: 'tr';
         $t = (string) ($ann['dest_type'] ?? 'hangup');
         $d = ast_sanitize_id((string) ($ann['dest'] ?? ''));
         $ctx = 'ann-' . $aid;

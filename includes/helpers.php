@@ -59,7 +59,7 @@ function nav_active(string $page): string
 
 function codecs_list(): array
 {
-    return ['alaw', 'ulaw', 'g722', 'gsm', 'opus'];
+    return ['alaw', 'ulaw', 'g722', 'gsm', 'g729', 'opus'];
 }
 
 function pbx_ws_url(): string
@@ -80,8 +80,22 @@ function ring_strategies(): array
         'fewestcalls' => 'En az çağrı alan',
         'random' => 'Rastgele',
         'rrmemory' => 'Sırayla (hafızalı)',
-        'rrordered' => 'Sırayla (sabit sıralı)',
-        'linear' => 'Sırayla',
+        'rrordered' => 'Döngülü sıra (her çağrıda kaldığı yerden)',
+        'linear' => 'Sabit üye sırası (1 → 2 → 3)',
         'wrandom' => 'Ağırlıklı rastgele',
     ];
+}
+
+function normalize_group_member(string $value): string
+{
+    $value = trim($value);
+    if (preg_match('/^([0-9]{7,20})#$/D', $value, $matches) === 1) {
+        return $matches[1] . '#';
+    }
+    return preg_replace('/\D/', '', $value) ?? '';
+}
+
+function group_member_is_external(string $value): bool
+{
+    return preg_match('/^[0-9]{7,20}#$/D', $value) === 1;
 }

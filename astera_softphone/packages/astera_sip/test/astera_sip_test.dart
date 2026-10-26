@@ -59,6 +59,25 @@ class MockAsteraSipPlatform
   Future<void> setSpeakerLevel(double level) async {}
 
   @override
+  Future<AudioDeviceState> getAudioDevices() async => const AudioDeviceState(
+    devices: [],
+    captureDeviceId: -1,
+    playbackDeviceId: -1,
+  );
+
+  @override
+  Future<void> setAudioDevices({
+    required int captureDeviceId,
+    required int playbackDeviceId,
+  }) async {}
+
+  @override
+  Future<void> setRingtoneStyle(int style) async {}
+
+  @override
+  Future<void> setRingtoneFile(String path) async {}
+
+  @override
   Future<void> dispose() async {}
 }
 

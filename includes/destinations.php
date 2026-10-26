@@ -14,7 +14,7 @@ function dest_types(): array
         'flow' => 'Gündüz / gece',
         'disa' => 'DISA',
         'paging' => 'Anons / page',
-        'voicemail' => 'Gelen kutusu',
+        'voicemail' => 'Mesaj Kutusu',
         'external' => 'Dış numara',
         'custom' => 'Özel hedef',
         'hangup' => 'Kapat',
@@ -90,6 +90,127 @@ function dest_belongs_to_dept(string $dept, string $type, string $dest): bool
         }
     }
     return false;
+}
+
+function dest_resolve_for_dept(string $dept, string $type, string $dest): string
+{
+    $type = dest_allowed($type);
+    $dest = ast_sanitize_id($dest);
+    if ($type === 'hangup') {
+        return 'hangup';
+    }
+    if ($type === 'external') {
+        return preg_match('/^\d{3,20}$/', $dest) === 1 ? $dest : '';
+    }
+    foreach (dest_catalog($dept)[$type] ?? [] as $item) {
+        $id = ast_sanitize_id((string) ($item['id'] ?? ''));
+        if ($id === $dest || str_ends_with($id, '-' . $dest)) {
+            return $id;
+        }
+    }
+    return '';
+}
+
+function dest_export_value(string $dept, string $type, string $dest): string
+{
+    $type = dest_allowed($type);
+    $resolved = dest_resolve_for_dept($dept, $type, $dest);
+    if ($resolved === '' || in_array($type, ['hangup', 'external'], true)) {
+        return $type === 'external' ? $resolved : '';
+    }
+    $store = match ($type) {
+        'extension', 'voicemail' => 'extensions',
+        'queue' => 'queues',
+        'ringgroup' => 'ringgroups',
+        'ivr' => 'ivrs',
+        'time' => 'timeconditions',
+        'announcement' => 'announcements',
+        'conference' => 'conferences',
+        'flow' => 'flows',
+        'disa' => 'disas',
+        'paging' => 'pagings',
+        'custom' => 'customs',
+        default => '',
+    };
+    $row = $store !== '' ? find_by($store, 'id', $resolved) : null;
+    return (string) ($row['exten'] ?? $resolved);
+}
+
+function extension_default_fallback(string $dept): array
+{
+    foreach (store_read('ivrs') as $ivr) {
+        if (
+            (string) ($ivr['dept'] ?? '') === $dept
+            && (string) ($ivr['exten'] ?? '') === '8502'
+        ) {
+            return [
+                'type' => 'ivr',
+                'dest' => (string) ($ivr['id'] ?? ''),
+            ];
+        }
+    }
+    return ['type' => 'hangup', 'dest' => ''];
+}
+
+function dial_code_usages(
+    string $dept,
+    string $code,
+    string $excludeStore = '',
+    string $excludeId = ''
+): array {
+    $code = preg_replace('/\D/', '', $code) ?? '';
+    if ($code === '') {
+        return [];
+    }
+    $stores = [
+        'extensions' => ['Abone', 'exten'],
+        'queues' => ['Kuyruk', 'exten'],
+        'ringgroups' => ['Ring grup', 'exten'],
+        'ivrs' => ['IVR', 'exten'],
+        'conferences' => ['Konferans', 'exten'],
+        'pagings' => ['Anons grubu', 'exten'],
+        'disas' => ['DISA', 'exten'],
+    ];
+    $usages = [];
+    foreach ($stores as $store => [$label, $field]) {
+        foreach (store_read($store) as $row) {
+            if ((string) ($row['dept'] ?? '') !== $dept) continue;
+            $rowId = (string) ($row['id'] ?? '');
+            if ($store === $excludeStore && $rowId === $excludeId) continue;
+            if ((string) ($row[$field] ?? '') === $code) {
+                $usages[] = $label . ': ' . (string) ($row['name'] ?? $rowId ?: $code);
+            }
+            if ($store === 'queues' && in_array($code, array_map('strval', (array) ($row['dial_aliases'] ?? [])), true)) {
+                $usages[] = 'Kuyruk kısa kodu: ' . (string) ($row['name'] ?? $rowId);
+            }
+        }
+    }
+    foreach (store_read('flows') as $row) {
+        if ((string) ($row['dept'] ?? '') !== $dept) continue;
+        if (trim((string) ($row['feature'] ?? '')) === $code) {
+            $usages[] = 'Gündüz/gece kodu: ' . (string) ($row['name'] ?? $row['id'] ?? $code);
+        }
+    }
+    $parking = parking_for($dept);
+    $parkExt = (int) ($parking['parkext'] ?? 700);
+    $parkStart = (int) ($parking['start'] ?? 701);
+    $parkEnd = (int) ($parking['end'] ?? 709);
+    $numericCode = (int) $code;
+    if ($numericCode === $parkExt || ($numericCode >= $parkStart && $numericCode <= $parkEnd)) {
+        $usages[] = 'Çağrı park alanı: ' . $parkExt . ' / ' . $parkStart . '-' . $parkEnd;
+    }
+    return array_values(array_unique($usages));
+}
+
+function next_available_dial_code(string $dept, int $start = 8500, int $end = 9999): string
+{
+    for ($number = $start; $number <= $end; $number++) {
+        $candidate = (string) $number;
+        if (!dial_code_usages($dept, $candidate)) {
+            return $candidate;
+        }
+    }
+    return '';
 }
 
 function dest_goto(string $dept, string $type, string $dest, string $intCtx): string
@@ -251,7 +372,7 @@ function normalize_sound_name(string $sound): string
 function tenant_store_names(): array
 {
     return [
-        'trunks', 'outbound', 'inbound', 'queues', 'ringgroups', 'ivrs', 'timeconditions',
+        'trunks', 'pri_spans', 'outbound', 'inbound', 'queues', 'ringgroups', 'ivrs', 'timeconditions',
         'announcements', 'conferences', 'blacklist', 'parking', 'flows', 'disas',
         'pagings', 'speeddials', 'customs', 'sounds', 'media', 'url_triggers',
     ];

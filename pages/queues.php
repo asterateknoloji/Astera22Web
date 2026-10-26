@@ -29,6 +29,26 @@ foreach (departments() as $department) {
         </thead>
         <tbody>
         <?php foreach ($rows as $row): ?>
+            <?php
+            $memberPenaltyIndex = [];
+            foreach ((array) ($row['member_penalties'] ?? []) as $key => $penaltyRow) {
+                if (is_array($penaltyRow)) {
+                    $memberNumber = (string) ($penaltyRow['member'] ?? '');
+                    if ($memberNumber !== '') {
+                        $memberPenaltyIndex[$memberNumber] = max(1, (int) ($penaltyRow['penalty'] ?? 1));
+                    }
+                } else {
+                    $memberPenaltyIndex[(string) $key] = max(1, (int) $penaltyRow);
+                }
+            }
+            $queueMembers = array_values((array) ($row['members'] ?? []));
+            $memberLabels = array_map(
+                static fn($member, int $index): string => ($index + 1) . '. ' . (string) $member
+                    . ' (Öncelik ' . (int) ($memberPenaltyIndex[(string) $member] ?? 1) . ')',
+                $queueMembers,
+                array_keys($queueMembers)
+            );
+            ?>
             <tr>
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
                 <td><code><?= e($row['id']) ?></code><br><small><?= e($row['name'] ?? '') ?></small></td>
@@ -41,7 +61,7 @@ foreach (departments() as $department) {
                     : !empty($queueDept['record']);
                 ?>
                 <td><?= $recordEnabled ? strtoupper(e((string) ($row['record_format'] ?? 'wav'))) : 'Kapalı' ?></td>
-                <td><?= e(implode(', ', $row['members'] ?? [])) ?></td>
+                <td><?= e(implode(' → ', $memberLabels)) ?></td>
                 <td>
                     <?= (int) ($row['queue_timeout'] ?? 300) === 0 ? 'Sınırsız' : (int) ($row['queue_timeout'] ?? 300) . ' sn' ?>
                     <br><small>Maks. <?= (int) ($row['maxlen'] ?? 0) === 0 ? 'sınırsız' : (int) $row['maxlen'] ?></small>
@@ -52,6 +72,7 @@ foreach (departments() as $department) {
                 </td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-queue='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
+                    <button class="btn sm" type="button" data-copy-queue='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Çoğalt</button>
                     <button class="btn sm danger" type="button" data-del-queue="<?= e($row['id']) ?>">Sil</button>
                 </td>
             </tr>

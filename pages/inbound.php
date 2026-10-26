@@ -14,6 +14,8 @@ $types = dest_types();
                 <?php if ($showDept): ?><th>Firma</th><?php endif; ?>
                 <th>Ad</th>
                 <th>DID</th>
+                <th>Arayan No</th>
+                <th>CID Öneki</th>
                 <th>Hedef</th>
                 <th></th>
             </tr>
@@ -24,15 +26,18 @@ $types = dest_types();
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
                 <td><?= e($row['name'] ?? '') ?></td>
                 <td><code><?= e($row['did'] ?? '') ?></code></td>
+                <td><code><?= e($row['caller_id'] ?? 'Tümü') ?></code></td>
+                <td><?= e($row['cid_prefix'] ?? '—') ?></td>
                 <td><?= e($types[$row['dest_type'] ?? ''] ?? ($row['dest_type'] ?? '')) ?> · <?= e($row['dest'] ?? '') ?></td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-in='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
+                    <button class="btn sm" type="button" data-copy-in='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Çoğalt</button>
                     <button class="btn sm danger" type="button" data-del-in="<?= e($row['id']) ?>">Sil</button>
                 </td>
             </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-            <tr><td colspan="5" class="muted">Gelen kural yok.</td></tr>
+            <tr><td colspan="<?= $showDept ? 8 : 7 ?>" class="muted">Gelen kural yok.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>

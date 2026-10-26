@@ -30,9 +30,9 @@ foreach ($rows as $row) {
                 <?php if ($showDept): ?><th>Firma</th><?php endif; ?>
                 <th>Öncelik</th>
                 <th>Ad</th>
-                <th>Kalıp</th>
-                <th>Sil / önek</th>
-                <th>Trunk</th>
+                <th>Arama kalıpları</th>
+                <th>Trunk sırası</th>
+                <th>Dağıtım</th>
                 <th></th>
             </tr>
         </thead>
@@ -41,6 +41,18 @@ foreach ($rows as $row) {
             <?php
             $routeDept = (string) ($row['dept'] ?? '');
             $routePosition = $routePositions[(string) ($row['id'] ?? '')] ?? 1;
+            $routePatterns = is_array($row['patterns'] ?? null) ? $row['patterns'] : [];
+            if (!$routePatterns) {
+                $routePatterns = [[
+                    'match' => (string) ($row['pattern'] ?? ''),
+                    'prefix' => '',
+                    'prepend' => (string) ($row['prefix'] ?? ''),
+                ]];
+            }
+            $routeTrunks = array_values(array_filter(array_map(
+                'strval',
+                is_array($row['trunks'] ?? null) ? $row['trunks'] : [(string) ($row['trunk'] ?? '')]
+            )));
             ?>
             <tr>
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
@@ -56,9 +68,17 @@ foreach ($rows as $row) {
                     </div>
                 </td>
                 <td><?= e($row['name'] ?? '') ?></td>
-                <td><code><?= e($row['pattern'] ?? '') ?></code></td>
-                <td><?= (int) ($row['strip'] ?? 0) ?> / <?= e($row['prefix'] ?? '-') ?></td>
-                <td><code><?= e($row['trunk'] ?? '') ?></code></td>
+                <td>
+                    <?php foreach ($routePatterns as $patternRow): ?>
+                        <div><code><?= e((string) ($patternRow['match'] ?? $patternRow['pattern'] ?? '')) ?></code>
+                            <?php if ((string) ($patternRow['prefix'] ?? '') !== ''): ?>
+                                <span class="muted">önek <?= e((string) $patternRow['prefix']) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </td>
+                <td><code><?= e(implode(' → ', $routeTrunks)) ?></code></td>
+                <td><?= !empty($row['equal_distribution']) ? 'Eşit' : 'Sıralı' ?></td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-out='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
                     <button class="btn sm danger" type="button" data-del-out="<?= e($row['id']) ?>">Sil</button>

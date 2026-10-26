@@ -20,6 +20,7 @@ const AsteraRtc = {
     incomingNumber: '',
     origTitle: document.title,
     history: [],
+    localHistory: [],
     crmPrevious: null,
     crmSeen: {},
 
@@ -187,6 +188,7 @@ const AsteraRtc = {
             this.applyBlfFilter();
             if (Array.isArray(data.recent_calls)) {
                 this.history = data.recent_calls.slice(0, 10);
+                this.reconcileLocalHistory();
                 this.renderHistory();
             }
             this.handleUrlTrigger(data.url_trigger, states);
@@ -537,15 +539,44 @@ const AsteraRtc = {
     },
 
     logHist(dir, num, ok) {
-        this.history.unshift({ dir, num, ok, at: new Date().toLocaleTimeString('tr-TR') });
-        this.history = this.history.slice(0, 10);
+        this.localHistory.unshift({
+            dir,
+            num,
+            ok,
+            at: new Date().toLocaleTimeString('tr-TR'),
+            createdAt: Date.now(),
+        });
+        this.localHistory = this.localHistory.slice(0, 10);
         this.renderHistory();
+    },
+
+    reconcileLocalHistory() {
+        this.localHistory = this.localHistory.filter((local) => {
+            return !this.history.some((remote) => (
+                String(remote.dir || '') === String(local.dir || '')
+                && String(remote.num || '') === String(local.num || '')
+                && this.historyTimeDifference(remote.at, local.createdAt) <= 120
+            ));
+        });
+    },
+
+    historyTimeDifference(time, timestamp) {
+        const parts = String(time || '').split(':').map(Number);
+        if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) {
+            return Number.POSITIVE_INFINITY;
+        }
+        const date = new Date(timestamp);
+        const localSeconds = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+        const remoteSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        const difference = Math.abs(localSeconds - remoteSeconds);
+        return Math.min(difference, 86400 - difference);
     },
 
     renderHistory() {
         const box = document.getElementById('sipHistory');
         if (!box) return;
-        box.innerHTML = this.history.map((h) =>
+        const rows = [...this.localHistory, ...this.history].slice(0, 10);
+        box.innerHTML = rows.map((h) =>
             `<button type="button" class="sip-person" data-num="${h.num}"><strong>${h.dir} ${h.num}</strong><span>${h.at}${h.ok ? '' : ' · başarısız'}</span></button>`
         ).join('') || '<p class="muted">Henüz arama yok.</p>';
         box.querySelectorAll('[data-num]').forEach((b) => {
@@ -568,7 +599,8 @@ const AsteraRtc = {
         const endpoint = window.ASTERA.webphoneCustomerUrl;
         if (!endpoint) return;
         try {
-            const response = await fetch(endpoint + '?phone=' + encodeURIComponent(number), {
+            const separator = endpoint.includes('?') ? '&' : '?';
+            const response = await fetch(endpoint + separator + 'phone=' + encodeURIComponent(number), {
                 credentials: 'same-origin',
                 cache: 'no-store',
             });
@@ -636,7 +668,6 @@ const AsteraRtc = {
         if (!row) return Astera.toast('WebRTC açık bir abone seçin', true);
         this.unlockAudio();
         this.disconnect();
-        this.prepareMicrophone();
         this.primeAudioOutput();
         const host = window.ASTERA.pbxHost;
         const socketUrl = location.protocol === 'https:'
@@ -735,6 +766,14 @@ const AsteraRtc = {
         return this.localStream.clone();
     },
 
+    releasePreparedMicrophone() {
+        if (this.localStream) {
+            this.localStream.getTracks().forEach((track) => track.stop());
+            this.localStream = null;
+        }
+        this.microphoneReady = null;
+    },
+
     primeAudioOutput() {
         const audio = document.getElementById('rtcRemote');
         if (!audio || !this.ac) return;
@@ -785,6 +824,7 @@ const AsteraRtc = {
         this.setState('Bağlandı', true);
         this.setMode('talk');
         this.startCallClock();
+        this.releasePreparedMicrophone();
         this.held = false;
     },
 
@@ -947,11 +987,34 @@ const AsteraRtc = {
         if (!this.session) return;
         const to = prompt('Aktarılacak dahili', '');
         if (!to) return;
+        const session = this.session;
+        let completed = false;
+        const transferAccepted = () => {
+            if (completed) return;
+            completed = true;
+            Astera.toast('Aktarım tamamlandı: ' + to);
+            try { session.terminate(); } catch (error) { /* uzak taraf kapanmış olabilir */ }
+            if (this.session === session) this.clearCall();
+        };
+        const transferFailed = () => {
+            if (completed) return;
+            completed = true;
+            Astera.toast('Aktarım başarısız', true);
+        };
         try {
-            this.session.refer('sip:' + to + '@' + window.ASTERA.pbxHost);
-            Astera.toast('Aktarıldı: ' + to);
+            session.refer(
+                'sip:' + to + '@' + window.ASTERA.pbxHost,
+                {
+                    eventHandlers: {
+                        accepted: transferAccepted,
+                        failed: transferFailed,
+                        requestFailed: transferFailed,
+                    },
+                }
+            );
+            this.setState('Aktarım bekleniyor…', true);
         } catch (e) {
-            Astera.toast('Aktarılamadı', true);
+            transferFailed();
         }
     },
 
@@ -980,6 +1043,7 @@ const AsteraRtc = {
     clearCall() {
         this.hideIncoming();
         this.stopCallClock();
+        this.releasePreparedMicrophone();
         this.session = null;
         this.muted = false;
         this.held = false;

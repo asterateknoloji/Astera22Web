@@ -238,26 +238,22 @@ if ($selected) {
                 <th>Yetkili</th>
                 <th>Telefon</th>
                 <th>E-posta</th>
-                <th></th>
             </tr>
             </thead>
             <tbody>
             <?php foreach ($customers as $customer): ?>
                 <tr>
                     <?php if (current_dept_id() === null): ?><td><?= e(dept_name((string) $customer['dept'])) ?></td><?php endif; ?>
-                    <td><strong><?= e($customer['company'] ?? '') ?></strong></td>
+                    <td><strong><a href="<?= e($crmBase . $crmJoin . 'id=' . rawurlencode((string) $customer['id'])) ?>"><?= e($customer['company'] ?? '') ?></a></strong></td>
                     <td><?= e($customer['contact'] ?: '—') ?></td>
                     <td><a class="crm-phone-dial" target="astera-webphone"
                         href="webphone.php?dial=<?= rawurlencode((string) ($customer['phone'] ?? '')) ?>"
                         data-crm-dial="<?= e($customer['phone'] ?? '') ?>"><?= e($customer['phone'] ?? '') ?></a></td>
                     <td><?= e($customer['email'] ?: '—') ?></td>
-                    <td class="right">
-                        <a class="btn sm" href="<?= e($crmBase . $crmJoin . 'id=' . rawurlencode((string) $customer['id'])) ?>">Kartı aç</a>
-                    </td>
                 </tr>
             <?php endforeach; ?>
             <?php if (!$customers): ?>
-                <tr><td colspan="<?= current_dept_id() === null ? 6 : 5 ?>" class="muted">Müşteri kartı bulunamadı.</td></tr>
+                <tr><td colspan="<?= current_dept_id() === null ? 5 : 4 ?>" class="muted">Fihrist kaydı bulunamadı.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>

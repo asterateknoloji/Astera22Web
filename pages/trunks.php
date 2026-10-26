@@ -39,6 +39,7 @@ $showDept = current_dept_id() === null;
                         <?= ($row['enabled'] ?? true) ? 'Devre dışı bırak' : 'Etkinleştir' ?>
                     </button>
                     <button class="btn sm" type="button" data-edit-trunk='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
+                    <button class="btn sm" type="button" data-copy-trunk='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Çoğalt</button>
                     <button class="btn sm danger" type="button" data-del-trunk="<?= e($row['id']) ?>">Sil</button>
                 </td>
             </tr>

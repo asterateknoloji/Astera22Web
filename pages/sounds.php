@@ -2,7 +2,10 @@
 $sounds = panel_sounds(current_dept_id());
 ?>
 <div class="toolbar">
-    <p class="muted">IVR, duyuru ve bekleme müzikleri firma bazında ayrılır. Yüklenen anonslar <code>custom/firma/ses</code> olarak saklanır.</p>
+    <p class="muted">
+        IVR, duyuru ve bekleme müzikleri firma bazında ayrılır.
+        Kullanımda olan dosyaların nerede kullanıldığı gösterilir; yalnız kullanılmayan dosyalar silinebilir.
+    </p>
 </div>
 <div class="grid-2">
     <article class="card">
@@ -39,7 +42,7 @@ $sounds = panel_sounds(current_dept_id());
     </article>
 </div>
 <article class="card flush">
-    <h2>Santraldeki dosyalar</h2>
+    <h2>Santraldeki dosyalar ve kullanım yerleri</h2>
     <div class="toolbar left"><button class="btn sm" type="button" id="reloadSounds">Yenile</button></div>
     <div class="sound-list" id="soundBox">yükleniyor…</div>
 </article>

@@ -42,13 +42,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <main class="login-card">
         <div class="brand-mark">A</div>
         <h1>ASTERA</h1>
-        <p class="muted">Asterisk 22 · çoklu firma santral</p>
+        <p class="muted">MultiTenant</p>
         <?php if ($error): ?>
             <div class="alert bad"><?= e($error) ?></div>
         <?php endif; ?>
         <form method="post" autocomplete="off">
             <label>Kullanıcı
-                <input name="user" value="admin" required>
+                <input name="user" autocomplete="username" required autofocus>
             </label>
             <label>Parola
                 <input type="password" name="pass" required>
@@ -56,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <button class="btn primary" type="submit">Giriş yap</button>
         </form>
         <p class="tiny"><a href="webphone.php">WebPhone girişi</a></p>
-        <p class="tiny muted">Santral <?= e(PBX_HOST) ?> · Asterisk 22.11.0</p>
+        <p class="tiny muted">Santral <?= e(PBX_HOST) ?> · Astera 22.11.0</p>
     </main>
 </body>
 </html>

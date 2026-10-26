@@ -8,18 +8,24 @@ $extensions = array_map(static fn(array $row): array => [
 ], scoped('extensions'));
 ?>
 <div class="toolbar">
-    <p class="muted">Sesli menü. Tuş 0–9, *, # bir hedefe gider. Firma dahilileri varsayılan olarak doğrudan tuşlanabilir.</p>
+    <p class="muted">Yeni IVR'a 8500'den başlayan boş bir dahili otomatik atanır. 1–4 haneli tuşlamaları + düğmesiyle ekleyebilirsiniz.</p>
     <button class="btn primary" type="button" id="addIvr">IVR ekle</button>
 </div>
 <article class="card flush">
     <table>
-        <thead><tr><?php if ($showDept): ?><th>Firma</th><?php endif; ?><th>Kod</th><th>Ad</th><th>Ses</th><th>Dahili tuşlama</th><th></th></tr></thead>
+        <thead><tr><?php if ($showDept): ?><th>Firma</th><?php endif; ?><th>IVR</th><th>Dahili</th><th>Ses</th><th>Dahili tuşlama</th><th></th></tr></thead>
         <tbody>
         <?php foreach ($rows as $row): ?>
             <tr>
                 <?php if ($showDept): ?><td><?= e(dept_name((string) $row['dept'])) ?></td><?php endif; ?>
-                <td><code><?= e($row['id']) ?></code></td>
-                <td><?= e($row['name'] ?? '') ?></td>
+                <?php
+                $ivrExten = (string) ($row['exten'] ?? '');
+                $ivrDisplayId = $ivrExten !== ''
+                    ? ((string) ($row['dept'] ?? '') . '-ivr-' . $ivrExten)
+                    : (string) ($row['id'] ?? '');
+                ?>
+                <td><code><?= e($ivrDisplayId) ?></code><br><small><?= e($row['name'] ?? '') ?></small></td>
+                <td><?= e($ivrExten !== '' ? $ivrExten : 'Atanmamış') ?></td>
                 <td><?= e($row['sound'] ?? '') ?></td>
                 <td>
                     <?php if ($row['direct_dial'] ?? true): ?>

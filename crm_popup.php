@@ -67,7 +67,7 @@ header('Referrer-Policy: same-origin');
         </div>
     </div>
     <nav class="crm-popup-nav">
-        <a class="btn crm-nav-primary" href="crm_popup.php">Müşteri Kartları</a>
+        <a class="btn crm-nav-primary" href="crm_popup.php">Fihrist Kayıtları</a>
         <?php if ($panelAccess): ?>
             <a class="btn crm-nav-back" href="index.php?p=crm">Panele dön</a>
         <?php elseif ($softphoneAccess): ?>

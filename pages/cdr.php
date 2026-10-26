@@ -79,6 +79,23 @@ $recordingFor = static function (array $cdr) use ($recordings): ?array {
 };
 $cdrDescription = static function (array $cdr): string {
     $parts = explode('|', (string) ($cdr['userfield'] ?? ''));
+    if (($parts[1] ?? '') === 'CID') {
+        $labels = [];
+        $inbound = trim((string) ($parts[2] ?? ''));
+        $destinationType = strtoupper(trim((string) ($parts[3] ?? '')));
+        $destination = trim((string) ($parts[4] ?? ''));
+        if ($inbound !== '') {
+            $labels[] = 'Inbound: ' . $inbound;
+        }
+        if ($destination !== '') {
+            $labels[] = match ($destinationType) {
+                'QUEUE' => 'Kuyruk: ' . $destination,
+                'RINGGROUP' => 'Ring grup: ' . $destination,
+                default => 'Hedef: ' . $destination,
+            };
+        }
+        return implode(' · ', $labels);
+    }
     if (($parts[1] ?? '') === 'BLACKLIST') {
         $number = preg_replace('/\D+/', '', (string) ($parts[2] ?? $cdr['src'] ?? '')) ?? '';
         return 'Kara liste nedeniyle reddedildi' . ($number !== '' ? ': ' . $number : '');
@@ -185,7 +202,7 @@ $cdrDescription = static function (array $cdr): string {
                 <td><span class="pill <?= $row['disposition'] === 'ANSWERED' ? 'ok' : 'dim' ?>"><?= e($row['disposition']) ?></span></td>
                 <td>
                     <?php if ($description !== ''): ?>
-                        <span class="pill bad"><?= e($description) ?></span>
+                        <span class="pill <?= str_contains((string) ($row['userfield'] ?? ''), '|CID|') ? 'dim' : 'bad' ?>"><?= e($description) ?></span>
                     <?php else: ?>
                         <span class="muted">—</span>
                     <?php endif; ?>
