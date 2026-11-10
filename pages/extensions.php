@@ -4,6 +4,7 @@ $outboundRoutes = scoped('outbound');
 $priSpans = scoped('pri_spans');
 $clientRows = array_map(static function (array $row): array {
     unset($row['password'], $row['vm_pin']);
+    $row['pickup_groups'] = extension_pickup_groups($row['pickup_groups'] ?? [1]);
     return $row;
 }, $rows);
 $clientOutboundRoutes = array_map(static fn(array $route): array => [
@@ -65,8 +66,17 @@ foreach (departments() as $department) {
             <tr>
                 <th><input type="checkbox" id="selectAllExt" aria-label="Görünen abonelerin tümünü seç"></th>
                 <?php if ($showDept): ?><th>Firma</th><?php endif; ?>
-                <th>Dahili</th>
-                <th>Ad</th>
+                <th data-extension-sort-header="exten">
+                    <button class="table-sort-button" type="button" data-extension-sort="exten">
+                        Dahili <span aria-hidden="true">↕</span>
+                    </button>
+                </th>
+                <th data-extension-sort-header="name">
+                    <button class="table-sort-button" type="button" data-extension-sort="name">
+                        Ad <span aria-hidden="true">↕</span>
+                    </button>
+                </th>
+                <th>Toplama grupları</th>
                 <th>Tür</th>
                 <th>SIP kullanıcı</th>
                 <th>Auth kullanıcı</th>
@@ -82,7 +92,10 @@ foreach (departments() as $department) {
         <tbody>
         <?php foreach ($rows as $row): ?>
             <?php $technology = strtolower((string) ($row['technology'] ?? 'pjsip')); ?>
-            <tr data-ext-row data-search="<?= e(strtolower(trim(
+            <tr data-ext-row
+                data-exten="<?= e((string) ($row['exten'] ?? '')) ?>"
+                data-name="<?= e((string) ($row['name'] ?? '')) ?>"
+                data-search="<?= e(strtolower(trim(
                 (string) ($row['exten'] ?? '') . ' '
                 . (string) ($row['sipuser'] ?? '') . ' '
                 . (string) ($row['name'] ?? '')
@@ -91,6 +104,7 @@ foreach (departments() as $department) {
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
                 <td><code><?= e($row['exten']) ?></code></td>
                 <td><?= e($row['name'] ?? '') ?></td>
+                <td><span class="pill"><?= e(implode(', ', extension_pickup_groups($row['pickup_groups'] ?? [1]))) ?></span></td>
                 <td><span class="pill <?= $technology !== 'pjsip' ? 'ok' : '' ?>"><?= e([
                     'dahdi' => 'DAHDI',
                     'custom' => 'CUSTOM',
@@ -170,7 +184,7 @@ foreach (departments() as $department) {
             </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-            <tr><td colspan="<?= $showDept ? 14 : 13 ?>" class="muted">Bu kapsamda abone yok.</td></tr>
+            <tr><td colspan="<?= $showDept ? 15 : 14 ?>" class="muted">Bu kapsamda abone yok.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>

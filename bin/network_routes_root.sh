@@ -33,16 +33,33 @@ apply_routes() {
             || { echo "Geçersiz arayüz: $interface" >&2; exit 1; }
         [[ "$metric" =~ ^[0-9]+$ ]] && ((metric <= 65535)) \
             || { echo "Geçersiz metric: $metric" >&2; exit 1; }
-        if ip -4 -o address show dev "$interface" \
-            | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$gateway"; then
-            ip -4 route replace "$destination" dev "$interface" src "$gateway" \
-                metric "$metric" proto static
-            mode="direct"
-        else
-            ip -4 route replace "$destination" via "$gateway" dev "$interface" \
-                metric "$metric" proto static
-            mode="via"
-        fi
+        applied=0
+        for attempt in {1..60}; do
+            if ! ip link show dev "$interface" >/dev/null 2>&1 \
+                || ! ip -4 -o address show dev "$interface" scope global | grep -q .; then
+                sleep 1
+                continue
+            fi
+            if ip -4 -o address show dev "$interface" \
+                | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$gateway"; then
+                if ip -4 route replace "$destination" dev "$interface" src "$gateway" \
+                    metric "$metric" proto static; then
+                    mode="direct"
+                    applied=1
+                    break
+                fi
+            elif ip -4 route replace "$destination" via "$gateway" dev "$interface" \
+                metric "$metric" proto static; then
+                mode="via"
+                applied=1
+                break
+            fi
+            sleep 1
+        done
+        ((applied == 1)) || {
+            echo "Rota 60 saniye içinde uygulanamadı: $destination via $gateway dev $interface" >&2
+            exit 1
+        }
         printf '%s|%s|%s|%s|%s\n' \
             "$destination" "$gateway" "$interface" "$metric" "$mode" >>"$state"
     done <"$config"

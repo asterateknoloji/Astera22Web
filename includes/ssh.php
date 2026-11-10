@@ -166,12 +166,12 @@ function pbx_apply_files(array $files, array $beforeReload = []): array
     }
 
     if (!$changed) {
-        return ['ok' => true, 'output' => trim(implode("\n", $log))];
+        return ['ok' => true, 'changed' => [], 'output' => trim(implode("\n", $log))];
     }
 
     $batchLocal = tempnam(sys_get_temp_dir(), 'astera-apply-');
     if ($batchLocal === false) {
-        return ['ok' => false, 'output' => 'Toplu yükleme dosyası oluşturulamadı'];
+        return ['ok' => false, 'changed' => [], 'output' => 'Toplu yükleme dosyası oluşturulamadı'];
     }
     $token = bin2hex(random_bytes(6));
     $batchRemote = '/tmp/astera-apply-' . $token . '.sh';
@@ -180,7 +180,11 @@ function pbx_apply_files(array $files, array $beforeReload = []): array
         $contents = file_get_contents($local);
         if ($contents === false) {
             @unlink($batchLocal);
-            return ['ok' => false, 'output' => 'Yapılandırma dosyası okunamadı: ' . $local];
+            return [
+                'ok' => false,
+                'changed' => [],
+                'output' => 'Yapılandırma dosyası okunamadı: ' . $local,
+            ];
         }
         $remoteTemp = dirname($remote) . '/.' . basename($remote) . '.' . $token;
         $batchScript .= 'printf %s ' . escapeshellarg(base64_encode($contents))
@@ -191,9 +195,13 @@ function pbx_apply_files(array $files, array $beforeReload = []): array
     $upload = pbx_upload($batchLocal, $batchRemote);
     @unlink($batchLocal);
     if (!$upload['ok']) {
-        return ['ok' => false, 'output' => trim(
-            implode("\n", $log) . "\nToplu yükleme başarısız: " . $upload['output']
-        )];
+        return [
+            'ok' => false,
+            'changed' => [],
+            'output' => trim(
+                implode("\n", $log) . "\nToplu yükleme başarısız: " . $upload['output']
+            ),
+        ];
     }
     foreach ($changed as $name) {
         $log[] = $name . ': yüklendi';
@@ -244,5 +252,9 @@ function pbx_apply_files(array $files, array $beforeReload = []): array
     $reload = pbx_ssh(implode("\n", $commands));
 
     $log[] = $reload['output'];
-    return ['ok' => $reload['ok'], 'output' => trim(implode("\n", $log))];
+    return [
+        'ok' => $reload['ok'],
+        'changed' => $changed,
+        'output' => trim(implode("\n", $log)),
+    ];
 }

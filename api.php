@@ -74,6 +74,10 @@ function network_posted_setting(): array
     if ($interface === '' || !$live) {
         json_out(['ok' => false, 'error' => 'Ethernet arayüzü bulunamadı'], 422);
     }
+    $displayName = trim((string) ($_POST['display_name'] ?? ''));
+    if (mb_strlen($displayName) > 80 || preg_match('/[\x00-\x1F\x7F]/u', $displayName) === 1) {
+        json_out(['ok' => false, 'error' => 'Ethernet adı en fazla 80 karakter olmalı ve kontrol karakteri içermemelidir'], 422);
+    }
     $dept = require_dept_id();
     $method = (string) ($_POST['method'] ?? 'dhcp');
     if (!in_array($method, ['dhcp', 'manual'], true)) {
@@ -142,6 +146,7 @@ function network_posted_setting(): array
     }
     return [
         'interface_name' => $interface,
+        'display_name' => $displayName,
         'dept_id' => $dept,
         'method' => $method,
         'ipv4_cidr' => $cidr,
@@ -237,10 +242,47 @@ function asterisk_log_files(): array
         }
         $files[$name] = [
             'name' => $name,
+            'label' => 'Asterisk · ' . $name,
+            'path' => '/var/log/asterisk/' . $name,
+            'type' => 'file',
             'size' => max(0, (int) $size),
             'modified' => max(0, (int) (float) $modified),
         ];
     }
+    $securityLogs = [
+        'security-fail2ban.log' => ['Güvenlik · Fail2Ban', '/var/log/fail2ban.log'],
+        'security-auth.log' => ['Güvenlik · SSH / Kimlik doğrulama', '/var/log/auth.log'],
+    ];
+    foreach ($securityLogs as $name => [$label, $path]) {
+        $stat = pbx_ssh(
+            'test -f ' . escapeshellarg($path)
+            . ' && stat -c ' . escapeshellarg('%s %Y') . ' -- ' . escapeshellarg($path)
+        );
+        if (empty($stat['ok'])) {
+            continue;
+        }
+        [$size, $modified] = array_pad(
+            preg_split('/\s+/', trim((string) ($stat['output'] ?? '')), 2) ?: [],
+            2,
+            '0'
+        );
+        $files[$name] = [
+            'name' => $name,
+            'label' => $label,
+            'path' => $path,
+            'type' => 'file',
+            'size' => max(0, (int) $size),
+            'modified' => max(0, (int) $modified),
+        ];
+    }
+    $files['security-fail2ban-journal'] = [
+        'name' => 'security-fail2ban-journal',
+        'label' => 'Güvenlik · Fail2Ban servis günlüğü',
+        'path' => '',
+        'type' => 'journal',
+        'size' => 0,
+        'modified' => time(),
+    ];
     return array_values($files);
 }
 
@@ -969,6 +1011,69 @@ try {
             ]);
             json_out(['ok' => true]);
 
+        case 'feature_codes_save':
+            $dept = require_dept_id();
+            require_once __DIR__ . '/includes/feature_codes.php';
+            $decodedSettings = json_decode((string) ($_POST['settings_json'] ?? ''), true);
+            if (!is_array($decodedSettings)) {
+                json_out(['ok' => false, 'error' => 'Özellik kodu ayarları okunamadı'], 422);
+            }
+            $definitions = feature_code_definitions();
+            $candidate = [];
+            foreach ($definitions as $key => $definition) {
+                $submitted = $decodedSettings[$key] ?? null;
+                if (!is_array($submitted)) {
+                    json_out(['ok' => false, 'error' => (string) $definition['label'] . ' ayarı eksik'], 422);
+                }
+                $codeValue = trim((string) ($submitted['code'] ?? ''));
+                if (preg_match('/^[*#0-9]{1,16}$/D', $codeValue) !== 1) {
+                    json_out([
+                        'ok' => false,
+                        'error' => (string) $definition['label'] . ': kod yalnızca 0-9, * ve # içerebilir (en fazla 16 karakter)',
+                    ], 422);
+                }
+                $enabledValue = filter_var($submitted['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                $candidate[$key] = [
+                    'code' => $codeValue,
+                    'enabled' => $enabledValue,
+                    'label' => (string) $definition['label'],
+                ];
+            }
+            $conflicts = feature_code_settings_conflicts($dept, $candidate);
+            if ($conflicts) {
+                json_out([
+                    'ok' => false,
+                    'error' => 'Kod çakışması: ' . implode(' · ', $conflicts),
+                    'conflicts' => $conflicts,
+                ], 409);
+            }
+            $statements = [[
+                'DELETE FROM feature_code_settings WHERE dept_id=:dept',
+                ['dept' => $dept],
+            ]];
+            foreach ($candidate as $key => $setting) {
+                $statements[] = [
+                    'INSERT INTO feature_code_settings (dept_id,feature_key,code,enabled) '
+                    . 'VALUES (:dept,:feature_key,:code,:enabled)',
+                    [
+                        'dept' => $dept,
+                        'feature_key' => $key,
+                        'code' => $setting['code'],
+                        'enabled' => $setting['enabled'],
+                    ],
+                ];
+            }
+            callcenter_execute_batch($statements);
+            $applyResult = apply_to_pbx(true);
+            callcenter_audit_write([
+                'dept_id' => $dept,
+                'username' => substr((string) ($_SESSION['username'] ?? $_SESSION['user'] ?? 'santral-admin'), 0, 160),
+            ], 'update', 'ozellik_kodlari', 'Özellik kodları güncellendi ve santrala uygulandı', '', 'pbx');
+            json_out(array_merge([
+                'ok' => true,
+                'message' => 'Özellik kodları kaydedildi ve santrala uygulandı.',
+            ], $applyResult));
+
         case 'feature_takeover_save':
             $dept = require_dept_id();
             require_once __DIR__ . '/includes/feature_codes.php';
@@ -994,25 +1099,34 @@ try {
                     'conflicts' => $conflicts,
                 ], 409);
             }
-            callcenter_execute(
-                'INSERT INTO feature_takeover_settings '
-                . '(dept_id,enabled,activation_prefix,cancel_code) '
-                . 'VALUES (:dept,:enabled,:activation,:cancel) '
-                . 'ON CONFLICT (dept_id) DO UPDATE SET enabled=EXCLUDED.enabled,'
-                . 'activation_prefix=EXCLUDED.activation_prefix,cancel_code=EXCLUDED.cancel_code,updated_at=now()',
-                [
-                    'dept' => $dept,
-                    'enabled' => $enabled,
-                    'activation' => $activationPrefix,
-                    'cancel' => $cancelCode,
-                ]
-            );
+            $currentTakeover = feature_takeover_settings($dept);
+            $takeoverChanged = feature_takeover_bool($currentTakeover['enabled'] ?? false) !== $enabled
+                || (string) ($currentTakeover['activation_prefix'] ?? '') !== $activationPrefix
+                || (string) ($currentTakeover['cancel_code'] ?? '') !== $cancelCode;
+            if ($takeoverChanged) {
+                callcenter_execute(
+                    'INSERT INTO feature_takeover_settings '
+                    . '(dept_id,enabled,activation_prefix,cancel_code) '
+                    . 'VALUES (:dept,:enabled,:activation,:cancel) '
+                    . 'ON CONFLICT (dept_id) DO UPDATE SET enabled=EXCLUDED.enabled,'
+                    . 'activation_prefix=EXCLUDED.activation_prefix,cancel_code=EXCLUDED.cancel_code,updated_at=now()',
+                    [
+                        'dept' => $dept,
+                        'enabled' => $enabled,
+                        'activation' => $activationPrefix,
+                        'cancel' => $cancelCode,
+                    ]
+                );
+                store_request_mark_changed('feature_takeover_settings');
+            }
             $applyResult = apply_to_pbx();
-            pbx_cli('database deltree TAKEOVER ' . dept_code_of($dept));
-            callcenter_audit_write([
-                'dept_id' => $dept,
-                'username' => substr((string) ($_SESSION['username'] ?? $_SESSION['user'] ?? 'santral-admin'), 0, 160),
-            ], 'update', 'ozellik_kodlari', 'Dahili devralma kodları güncellendi', '', 'pbx');
+            if ($takeoverChanged) {
+                pbx_cli('database deltree TAKEOVER ' . dept_code_of($dept));
+                callcenter_audit_write([
+                    'dept_id' => $dept,
+                    'username' => substr((string) ($_SESSION['username'] ?? $_SESSION['user'] ?? 'santral-admin'), 0, 160),
+                ], 'update', 'ozellik_kodlari', 'Dahili devralma kodları güncellendi', '', 'pbx');
+            }
             json_out(array_merge([
                 'ok' => true,
                 'message' => $enabled
@@ -1098,6 +1212,7 @@ try {
                 if (strtolower((string) ($exportRow['technology'] ?? 'pjsip')) !== 'pjsip') {
                     $exportRow['password'] = '';
                 }
+                $exportRow['pickup_groups'] = extension_pickup_groups($exportRow['pickup_groups'] ?? [1]);
             }
             unset($exportRow);
             json_out(['ok' => true, 'extensions' => $exportRows]);
@@ -1289,6 +1404,14 @@ try {
             } elseif (preg_match('/^\d{4,10}$/D', $vmPin) !== 1) {
                 json_out(['ok' => false, 'error' => 'PIN yalnızca 4-10 rakamdan oluşmalıdır'], 422);
             }
+            try {
+                $pickupGroups = extension_pickup_groups(
+                    $_POST['pickup_groups'] ?? ($old['pickup_groups'] ?? [1]),
+                    true
+                );
+            } catch (InvalidArgumentException $exception) {
+                json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+            }
             store_upsert('extensions', [
                 'id' => $id,
                 'dept' => $dept,
@@ -1323,6 +1446,7 @@ try {
                 'crm_trigger' => $crmTrigger,
                 'outbound_enabled' => $outboundEnabled,
                 'outbound_routes' => $allowedOutboundRoutes,
+                'pickup_groups' => $pickupGroups,
             ], 'id');
             $applyResult = apply_to_pbx();
             if (!$old) {
@@ -1530,7 +1654,7 @@ try {
                 'outbound' => ['outbound_enabled', 'outbound_routes'],
                 'recording' => ['record', 'record_format'],
                 'voicemail' => ['vm_enabled'],
-                'routing' => ['ringtime', 'followme', 'fallback_type', 'fallback_dest'],
+                'routing' => ['ringtime', 'followme', 'fallback_type', 'fallback_dest', 'pickup_groups'],
                 'phone' => ['max_contacts', 'webrtc', 'phone_modes'],
                 'sip' => ['codecs', 'dtmf', 'language', 'transport', 'qualify'],
                 'crm' => ['crm_trigger'],
@@ -1623,6 +1747,10 @@ try {
                 'telefon' => 'phone_mode', 'telefon_turu' => 'phone_mode', 'phone_mode' => 'phone_mode',
                 'kayit' => 'record', 'record' => 'record',
                 'kodekler' => 'codecs', 'codecs' => 'codecs',
+                'cagri_toplama_gruplari' => 'pickup_groups',
+                'pickup_gruplari' => 'pickup_groups',
+                'pickup_groups' => 'pickup_groups',
+                'pickupgroup' => 'pickup_groups',
                 'cevaplanmazsa_mesgulse_tur' => 'fallback_type',
                 'cevaplanmazsa_mesgulse_hedef' => 'fallback_dest',
                 'fallback_type' => 'fallback_type', 'fallback_dest' => 'fallback_dest',
@@ -1813,6 +1941,7 @@ try {
                         'phone_modes' => [$technology === 'pjsip' ? 'softphone' : $technology],
                         'crm_trigger' => 'disabled',
                         'outbound_enabled' => false,
+                        'pickup_groups' => [1],
                     ];
                     $created++;
                 } else {
@@ -1901,6 +2030,16 @@ try {
                         continue;
                     }
                     $row['codecs'] = $codecs;
+                }
+                if (isset($columns['pickup_groups'])) {
+                    try {
+                        $row['pickup_groups'] = extension_pickup_groups($valueOf('pickup_groups'), true);
+                    } catch (InvalidArgumentException $exception) {
+                        $errors[] = "{$lineNumber}. satır: " . $exception->getMessage();
+                        continue;
+                    }
+                } elseif (!isset($row['pickup_groups'])) {
+                    $row['pickup_groups'] = [1];
                 }
                 if ($existingPosition === null) {
                     $rowIndexes[$id] = count($rows);
@@ -2281,6 +2420,29 @@ try {
             $qualifyFrequency = $qualifyEnabled
                 ? max(1, (int) ($_POST['qualify_frequency'] ?? 60))
                 : 0;
+            $identifyMatches = [];
+            $identifyInput = preg_split(
+                '/[\s,;]+/',
+                trim((string) ($_POST['identify_matches'] ?? '')),
+                -1,
+                PREG_SPLIT_NO_EMPTY
+            ) ?: [];
+            foreach (array_unique($identifyInput) as $identifyMatch) {
+                [$identifyIp, $identifyPrefix] = array_pad(explode('/', $identifyMatch, 2), 2, null);
+                $ipVersion = filter_var($identifyIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                    ? 4
+                    : (filter_var($identifyIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 6 : 0);
+                $prefixValid = $identifyPrefix === null
+                    || (ctype_digit($identifyPrefix)
+                        && (int) $identifyPrefix <= ($ipVersion === 4 ? 32 : 128));
+                if ($ipVersion === 0 || !$prefixValid) {
+                    json_out(['ok' => false, 'error' => 'Geçersiz gelen SIP kaynak IP/CIDR: ' . $identifyMatch], 422);
+                }
+                $identifyMatches[] = $identifyMatch;
+            }
+            if (count($identifyMatches) > 16) {
+                json_out(['ok' => false, 'error' => 'En fazla 16 gelen SIP kaynak IP/CIDR girilebilir.'], 422);
+            }
             store_upsert('trunks', [
                 'id' => $id,
                 'dept' => $dept,
@@ -2294,6 +2456,7 @@ try {
                 'password' => (string) ($_POST['password'] ?? ''),
                 'from_user' => trim((string) ($_POST['from_user'] ?? '')),
                 'from_domain' => trim((string) ($_POST['from_domain'] ?? '')),
+                'identify_matches' => $identifyMatches,
                 'outbound_caller_id' => $outboundCallerId,
                 'cid_option' => $cidOption,
                 'codecs' => array_values($codecs),
@@ -2326,22 +2489,27 @@ try {
             $wasEnabled = (bool) ($row['enabled'] ?? true);
             $row['enabled'] = !$wasEnabled;
             store_upsert('trunks', $row, 'id');
-            $applyResult = apply_to_pbx();
-            if ($wasEnabled && !$row['enabled']) {
-                require_once __DIR__ . '/includes/alarms.php';
-                astera_alarm_emit_event(
-                    (string) ($row['dept'] ?? ''),
-                    'trunk_error',
-                    'Trunk devre dışı bırakıldı: ' . (string) ($row['name'] ?? $row['id']),
-                    'Trunk: ' . (string) $row['id']
-                        . "\nSunucu: " . (string) ($row['host'] ?? '')
-                        . ':' . (int) ($row['port'] ?? 5060),
-                    'warning'
-                );
+            if ($wasEnabled && !$row['enabled'] && (string) ($row['type'] ?? 'register') === 'register') {
+                pbx_cli('pjsip send unregister ' . $id);
             }
+            $applyResult = apply_trunk_toggle_to_pbx($row);
+            require_once __DIR__ . '/includes/alarms.php';
+            $trunkEnabled = !empty($row['enabled']);
+            astera_alarm_emit_event(
+                (string) ($row['dept'] ?? ''),
+                'trunk_error',
+                ($trunkEnabled ? 'Trunk yeniden etkinleştirildi: ' : 'Trunk devre dışı bırakıldı: ')
+                    . (string) ($row['name'] ?? $row['id']),
+                'Trunk: ' . (string) $row['id']
+                    . "\nSunucu: " . (string) ($row['host'] ?? '')
+                    . ':' . (int) ($row['port'] ?? 5060),
+                $trunkEnabled ? 'info' : 'warning',
+                $trunkEnabled ? 'recovered' : 'triggered'
+            );
             json_out(array_merge([
                 'ok' => true,
                 'enabled' => $row['enabled'],
+                'message' => $row['enabled'] ? 'Trunk etkinleştirildi.' : 'Trunk kapatıldı.',
             ], $applyResult));
 
         case 'trunk_delete':
@@ -2358,8 +2526,11 @@ try {
                     json_out(['ok' => false, 'error' => 'Bu trunk bir giden arama kuralında kullanılıyor'], 409);
                 }
             }
+            if ($row && !empty($row['enabled']) && (string) ($row['type'] ?? 'register') === 'register') {
+                pbx_cli('pjsip send unregister ' . $id);
+            }
             store_delete('trunks', 'id', $id);
-            json_out(array_merge(['ok' => true], apply_to_pbx()));
+            json_out(array_merge(['ok' => true], apply_to_pbx(true)));
 
         case 'outbound_save':
             $dept = require_dept_id();
@@ -2634,6 +2805,43 @@ try {
             if (!in_array($recordFormat, ['wav', 'gsm', 'ulaw'], true)) {
                 $recordFormat = 'wav';
             }
+            $missedCallEmails = preg_split(
+                '/[\s,;]+/',
+                mb_strtolower(trim((string) ($_POST['missed_call_emails'] ?? '')), 'UTF-8'),
+                -1,
+                PREG_SPLIT_NO_EMPTY
+            ) ?: [];
+            $missedCallEmails = array_values(array_unique($missedCallEmails));
+            if (count($missedCallEmails) > 50) {
+                json_out(['ok' => false, 'error' => 'Bir kuyruk için en fazla 50 e-posta alıcısı tanımlanabilir'], 422);
+            }
+            foreach ($missedCallEmails as $email) {
+                if (mb_strlen($email, 'UTF-8') > 254 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                    json_out(['ok' => false, 'error' => 'Geçersiz bildirim e-posta adresi: ' . $email], 422);
+                }
+            }
+            $missedCallFromName = trim((string) ($_POST['missed_call_from_name'] ?? 'Astera Santral ve Callcenter'));
+            $missedCallSubject = trim((string) (
+                $_POST['missed_call_subject_template']
+                ?? '[Astera Santral ve Callcenter] Kaçan çağrı - {kuyruk}'
+            ));
+            $missedCallBody = trim((string) (
+                $_POST['missed_call_body_template']
+                ?? "Astera Santral ve Callcenter\n\nKaçan çağrı bildirimi\n\n"
+                    . "Kuyruk Adı: {kuyruk}\nNumara: {numara}\nTarih / Saat: {tarih} {saat}\n"
+                    . "Kaçtığı Sıra: {sira}\nBekleme Süresi: {bekleme} sn\nSantral: {santral}"
+            ));
+            if ($missedCallFromName === '' || mb_strlen($missedCallFromName, 'UTF-8') > 160
+                || preg_match('/[\r\n]/', $missedCallFromName)) {
+                json_out(['ok' => false, 'error' => 'Mail gönderen adı 1-160 karakter olmalıdır'], 422);
+            }
+            if ($missedCallSubject === '' || mb_strlen($missedCallSubject, 'UTF-8') > 500
+                || preg_match('/[\r\n]/', $missedCallSubject)) {
+                json_out(['ok' => false, 'error' => 'Mail konusu 1-500 karakter olmalıdır'], 422);
+            }
+            if ($missedCallBody === '' || mb_strlen($missedCallBody, 'UTF-8') > 8000) {
+                json_out(['ok' => false, 'error' => 'Mail içeriği 1-8000 karakter olmalıdır'], 422);
+            }
             store_upsert('queues', [
                 'id' => $id,
                 'dept' => $dept,
@@ -2684,6 +2892,45 @@ try {
                 'member_penalties' => array_values($memberPenalties),
                 'dial_aliases' => array_values((array) ($oldQueue['dial_aliases'] ?? [])),
             ], 'id');
+            $existingMissedCallEmails = array_column(callcenter_rows(
+                'SELECT email FROM callcenter_queue_notification_recipients '
+                . 'WHERE dept_id=:dept AND queue_id=:queue AND active ORDER BY email',
+                ['dept' => $dept, 'queue' => $id]
+            ), 'email');
+            sort($existingMissedCallEmails);
+            $sortedMissedCallEmails = $missedCallEmails;
+            sort($sortedMissedCallEmails);
+            if ($existingMissedCallEmails !== $sortedMissedCallEmails) {
+                $recipientStatements = [[
+                    'DELETE FROM callcenter_queue_notification_recipients '
+                    . 'WHERE dept_id=:dept AND queue_id=:queue',
+                    ['dept' => $dept, 'queue' => $id],
+                ]];
+                foreach ($sortedMissedCallEmails as $email) {
+                    $recipientStatements[] = [
+                        'INSERT INTO callcenter_queue_notification_recipients '
+                        . '(dept_id,queue_id,email,active) VALUES (:dept,:queue,:email,TRUE)',
+                        ['dept' => $dept, 'queue' => $id, 'email' => $email],
+                    ];
+                }
+                callcenter_execute_batch($recipientStatements);
+            }
+            callcenter_execute(
+                'INSERT INTO callcenter_queue_settings '
+                . '(dept_id,queue_id,missed_call_from_name,missed_call_subject_template,missed_call_body_template) '
+                . 'VALUES (:dept,:queue,:from_name,:subject,:body) '
+                . 'ON CONFLICT (dept_id,queue_id) DO UPDATE SET '
+                . 'missed_call_from_name=EXCLUDED.missed_call_from_name,'
+                . 'missed_call_subject_template=EXCLUDED.missed_call_subject_template,'
+                . 'missed_call_body_template=EXCLUDED.missed_call_body_template,updated_at=now()',
+                [
+                    'dept' => $dept,
+                    'queue' => $id,
+                    'from_name' => $missedCallFromName,
+                    'subject' => $missedCallSubject,
+                    'body' => $missedCallBody,
+                ]
+            );
             json_out(array_merge(['ok' => true], apply_to_pbx()));
 
         case 'queue_delete':
@@ -2691,6 +2938,15 @@ try {
             $row = find_by('queues', 'id', $id);
             if ($row) {
                 assert_row_scope($row);
+                callcenter_execute(
+                    'DELETE FROM callcenter_queue_notification_recipients '
+                    . 'WHERE dept_id=:dept AND queue_id=:queue',
+                    ['dept' => (string) ($row['dept'] ?? ''), 'queue' => $id]
+                );
+                callcenter_execute(
+                    'DELETE FROM callcenter_queue_settings WHERE dept_id=:dept AND queue_id=:queue',
+                    ['dept' => (string) ($row['dept'] ?? ''), 'queue' => $id]
+                );
             }
             store_delete('queues', 'id', $id);
             json_out(array_merge(['ok' => true], apply_to_pbx()));
@@ -3249,6 +3505,7 @@ try {
                     'webrtc' => false,
                     'phone_modes' => [$technology === 'pjsip' ? 'softphone' : $technology],
                     'crm_trigger' => 'disabled',
+                    'pickup_groups' => [1],
                     'outbound_enabled' => !array_key_exists('outbound_enabled', $_POST)
                         || !empty($_POST['outbound_enabled']),
                 ];
@@ -3552,15 +3809,28 @@ try {
                 json_out(['ok' => false, 'error' => 'Arama metni 200 karakteri aşamaz'], 422);
             }
             $lines = max(50, min(2000, (int) ($_POST['lines'] ?? 200)));
-            $path = '/var/log/asterisk/' . $file;
-            $command = $query === ''
-                ? 'tail -n ' . $lines . ' -- ' . escapeshellarg($path) . ' 2>/dev/null'
-                : 'LC_ALL=C grep -iF -- ' . escapeshellarg($query) . ' '
-                    . escapeshellarg($path) . ' 2>/dev/null | tail -n ' . $lines;
+            $selectedLog = $knownFiles[$file];
+            if (($selectedLog['type'] ?? 'file') === 'journal') {
+                $baseCommand = 'journalctl -u fail2ban.service --no-pager -n 5000 2>/dev/null';
+                $command = $query === ''
+                    ? $baseCommand . ' | tail -n ' . $lines
+                    : $baseCommand . ' | LC_ALL=C grep -iF -- '
+                        . escapeshellarg($query) . ' | tail -n ' . $lines;
+            } else {
+                $path = (string) ($selectedLog['path'] ?? '');
+                $command = $query === ''
+                    ? 'tail -n ' . $lines . ' -- ' . escapeshellarg($path) . ' 2>/dev/null'
+                    : 'LC_ALL=C grep -iF -- ' . escapeshellarg($query) . ' '
+                        . escapeshellarg($path) . ' 2>/dev/null | tail -n ' . $lines;
+            }
             $res = pbx_ssh($command);
+            $visibleFiles = array_map(static function (array $log): array {
+                unset($log['path'], $log['type']);
+                return $log;
+            }, $files);
             json_out([
                 'ok' => true,
-                'files' => $files,
+                'files' => $visibleFiles,
                 'file' => $file,
                 'query' => $query,
                 'lines' => $lines,
@@ -3931,6 +4201,18 @@ try {
             $setting['backup_connection'] = '';
             $setting['applied_at'] = '';
             network_save_setting($setting);
+            $identityCidr = (string) ($setting['ipv4_cidr'] ?? '');
+            if ($identityCidr === '') {
+                foreach (network_inventory() as $liveInterface) {
+                    if ((string) ($liveInterface['interface_name'] ?? '') === $interface) {
+                        $identityCidr = (string) ($liveInterface['ipv4_cidr'] ?? '');
+                        break;
+                    }
+                }
+            }
+            if ($identityCidr !== '') {
+                network_sync_pbx_identity($interface, $identityCidr);
+            }
             json_out(['ok' => true, 'output' => (string) ($result['output'] ?? '')]);
 
         case 'security_firewall_apply':

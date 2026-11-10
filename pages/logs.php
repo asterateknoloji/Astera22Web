@@ -1,9 +1,9 @@
 <article class="card log-browser">
     <div class="log-browser-heading">
         <div>
-            <span class="security-kicker">ASTERISK LOGLARI</span>
-            <h2>/var/log/asterisk/</h2>
-            <p class="muted">Bir dosya seçin, son satırları görüntüleyin veya dosya içinde metin arayın.</p>
+            <span class="security-kicker">SİSTEM VE GÜVENLİK LOGLARI</span>
+            <h2>Asterisk · Fail2Ban · SSH</h2>
+            <p class="muted">Asterisk ve güvenlik kayıtlarından bir kaynak seçin; son satırları görüntüleyin veya metin arayın.</p>
         </div>
         <span class="pill dim" id="logFileMeta">Dosyalar yükleniyor…</span>
     </div>

@@ -74,11 +74,18 @@ function astera_alarm_decrypt(string $encoded): string
 function astera_alarm_ensure_rules(string $deptId): void
 {
     foreach (astera_alarm_definitions() as $key => $definition) {
+        $enabledByDefault = in_array($key, ['trunk_error', 'trunk_down'], true);
         callcenter_execute(
             'INSERT INTO callcenter_alarm_rules '
             . '(dept_id,alarm_key,enabled,threshold_value,warning_value) '
-            . 'VALUES (:dept,:alarm,FALSE,:threshold,:warning) ON CONFLICT (dept_id,alarm_key) DO NOTHING',
-            ['dept' => $deptId, 'alarm' => $key, 'threshold' => $definition[3], 'warning' => $definition[4]]
+            . 'VALUES (:dept,:alarm,:enabled,:threshold,:warning) ON CONFLICT (dept_id,alarm_key) DO NOTHING',
+            [
+                'dept' => $deptId,
+                'alarm' => $key,
+                'enabled' => $enabledByDefault,
+                'threshold' => $definition[3],
+                'warning' => $definition[4],
+            ]
         );
     }
 }
@@ -114,19 +121,61 @@ function astera_alarm_send_email(array $smtp, array $recipients, string $subject
     stream_set_timeout($socket, (int) ($smtp['timeout_seconds'] ?? 15));
     try {
         astera_alarm_smtp_command($socket, '', [220]);
-        astera_alarm_smtp_command($socket, 'EHLO ' . (gethostname() ?: 'astera-pbx'), [250]);
+        $ehloResponse = astera_alarm_smtp_command(
+            $socket,
+            'EHLO ' . (gethostname() ?: 'astera-pbx'),
+            [250]
+        );
         if ($encryption === 'tls') {
             astera_alarm_smtp_command($socket, 'STARTTLS', [220]);
             if (!stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
                 throw new RuntimeException('SMTP TLS bağlantısı başlatılamadı.');
             }
-            astera_alarm_smtp_command($socket, 'EHLO ' . (gethostname() ?: 'astera-pbx'), [250]);
+            $ehloResponse = astera_alarm_smtp_command(
+                $socket,
+                'EHLO ' . (gethostname() ?: 'astera-pbx'),
+                [250]
+            );
         }
         $username = (string) ($smtp['username'] ?? '');
         if ($username !== '') {
-            astera_alarm_smtp_command($socket, 'AUTH LOGIN', [334]);
-            astera_alarm_smtp_command($socket, base64_encode($username), [334]);
-            astera_alarm_smtp_command($socket, base64_encode(astera_alarm_decrypt((string) ($smtp['password_encrypted'] ?? ''))), [235]);
+            $password = astera_alarm_decrypt((string) ($smtp['password_encrypted'] ?? ''));
+            preg_match_all('/^250[ -]AUTH(?:=|\s+)(.+)$/mi', $ehloResponse, $authMatches);
+            $authMethods = array_values(array_unique(preg_split(
+                '/\s+/',
+                strtoupper(trim(implode(' ', $authMatches[1] ?? []))),
+                -1,
+                PREG_SPLIT_NO_EMPTY
+            ) ?: []));
+            if (in_array('CRAM-MD5', $authMethods, true)) {
+                $challengeResponse = astera_alarm_smtp_command($socket, 'AUTH CRAM-MD5', [334]);
+                $challengeLine = trim((string) preg_replace('/^334\s*/', '', trim($challengeResponse)));
+                $challenge = base64_decode($challengeLine, true);
+                if ($challenge === false) {
+                    throw new RuntimeException('SMTP CRAM-MD5 doğrulama isteği geçersiz.');
+                }
+                $digest = hash_hmac('md5', $challenge, $password);
+                astera_alarm_smtp_command(
+                    $socket,
+                    base64_encode($username . ' ' . $digest),
+                    [235]
+                );
+            } elseif (in_array('LOGIN', $authMethods, true)) {
+                astera_alarm_smtp_command($socket, 'AUTH LOGIN', [334]);
+                astera_alarm_smtp_command($socket, base64_encode($username), [334]);
+                astera_alarm_smtp_command($socket, base64_encode($password), [235]);
+            } elseif (in_array('PLAIN', $authMethods, true)) {
+                astera_alarm_smtp_command(
+                    $socket,
+                    'AUTH PLAIN ' . base64_encode("\0" . $username . "\0" . $password),
+                    [235]
+                );
+            } else {
+                throw new RuntimeException(
+                    'SMTP sunucusunun desteklediği doğrulama yöntemi kullanılamıyor: '
+                    . ($authMethods ? implode(', ', $authMethods) : 'AUTH bildirilmedi')
+                );
+            }
         }
         $fromEmail = trim((string) ($smtp['from_email'] ?? ''));
         if (!filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) throw new RuntimeException('Gönderen e-posta adresi geçersiz.');
@@ -157,12 +206,16 @@ function astera_alarm_emit_event(
     string $key,
     string $summary,
     string $details = '',
-    string $severity = 'info'
+    string $severity = 'info',
+    string $eventType = 'triggered'
 ): bool {
     try {
         $definition = astera_alarm_definitions()[$key] ?? null;
         if ($definition === null) {
             throw new InvalidArgumentException('Bilinmeyen alarm anahtarı: ' . $key);
+        }
+        if (!in_array($eventType, ['triggered', 'recovered'], true)) {
+            throw new InvalidArgumentException('Geçersiz alarm olay türü: ' . $eventType);
         }
         $rule = callcenter_rows(
             'SELECT enabled FROM callcenter_alarm_rules WHERE dept_id=:dept AND alarm_key=:alarm',
@@ -179,7 +232,7 @@ function astera_alarm_emit_event(
             [
                 'dept' => $deptId,
                 'alarm' => $key,
-                'type' => 'triggered',
+                'type' => $eventType,
                 'severity' => $severity,
                 'summary' => mb_substr($summary, 0, 500),
                 'details' => $details,
@@ -199,7 +252,9 @@ function astera_alarm_emit_event(
             return true;
         }
 
-        $subject = '[Astera PBX] Olay: ' . $definition[1];
+        $subject = '[Astera PBX] '
+            . ($eventType === 'recovered' ? 'Düzeldi: ' : 'Olay: ')
+            . $definition[1];
         $html = '<h2>' . e($subject) . '</h2>'
             . '<p><strong>Firma:</strong> ' . e($deptId) . '</p>'
             . '<p><strong>Olay:</strong> ' . e($summary) . '</p>'
@@ -333,8 +388,23 @@ function astera_alarm_evaluate(string $key): ?array
     }
     if ($key === 'trunk_down' || $key === 'trunk_error') {
         $output = astera_alarm_shell('asterisk -rx ' . escapeshellarg('pjsip show registrations'));
-        $bad = preg_match('/\b(Rejected|Unregistered|Timeout|No Authentication)\b/i', $output) === 1;
-        return [$bad ? 1.0 : 0.0, $bad ? 'Kayıtsız veya hatalı trunk bulundu' : 'Trunk kayıt hatası bulunmadı'];
+        $registrationBad = preg_match('/\b(Rejected|Unregistered|Timeout|No Authentication)\b/i', $output) === 1;
+        $healthPath = '/var/lib/astera-pjsip-health/status';
+        $health = is_readable($healthPath) ? trim((string) file_get_contents($healthPath)) : '';
+        $healthStale = is_file($healthPath) && (time() - (int) filemtime($healthPath)) > 180;
+        $healthBad = str_starts_with($health, 'FAIL|') || $healthStale;
+        $bad = $registrationBad || $healthBad;
+        if ($healthStale) {
+            $summary = 'PJSIP sağlık denetimi 3 dakikadan uzun süredir çalışmıyor';
+        } elseif ($healthBad) {
+            $parts = explode('|', $health, 3);
+            $summary = (string) ($parts[2] ?? 'PJSIP trunk sağlık hatası');
+        } elseif ($registrationBad) {
+            $summary = 'Kayıtsız veya hatalı trunk bulundu';
+        } else {
+            $summary = 'Trunk kayıtları, endpoint/identify nesneleri ve SIP UDP kuyruğu sağlıklı';
+        }
+        return [$bad ? 1.0 : 0.0, $summary];
     }
     if ($key === 'ip_blacklisted' || $key === 'hacking_reject') {
         $output = astera_alarm_shell('fail2ban-client status asterisk');

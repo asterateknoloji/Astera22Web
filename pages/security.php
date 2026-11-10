@@ -2,11 +2,17 @@
 $firewall = find_by('security_settings', 'id', 'firewall') ?? [];
 $managementNetworks = (array) ($firewall['management_networks'] ?? [PBX_LOCAL_NET]);
 $sipNetworks = (array) ($firewall['sip_networks'] ?? [PBX_LOCAL_NET]);
-if (!$firewall) {
-    foreach (store_read('trunks') as $trunk) {
-        $host = trim((string) ($trunk['host'] ?? ''));
-        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-            $sipNetworks[] = $host . '/32';
+foreach (store_read('trunks') as $trunk) {
+    $sources = array_merge(
+        [trim((string) ($trunk['host'] ?? ''))],
+        (array) ($trunk['identify_matches'] ?? [])
+    );
+    foreach ($sources as $source) {
+        $source = trim((string) $source);
+        if (filter_var($source, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $sipNetworks[] = $source . '/32';
+        } elseif (preg_match('/^[0-9.]+\/(?:[0-9]|[12][0-9]|3[0-2])$/D', $source) === 1) {
+            $sipNetworks[] = $source;
         }
     }
 }
@@ -17,6 +23,8 @@ $ufw = pbx_ssh(
     "printf '%s\\n' '--- UFW ---'\nufw status numbered 2>&1 || true\n"
     . "printf '%s\\n' '--- Açık portlar ---'\nss -lntp 2>&1 || true"
 );
+$ufwOutput = trim((string) ($ufw['output'] ?? ''));
+$ufwActive = preg_match('/^(?:Status:\s*active|Durum:\s*etkin)\s*$/mi', $ufwOutput) === 1;
 $currentIp = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
 ?>
 <article class="card security-intro">
@@ -28,10 +36,21 @@ $currentIp = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
             bir yerel ağ için <code>/24</code> kullanabilirsiniz.
         </p>
     </div>
-    <div class="security-current-ip">
-        <span>Şu an bağlandığınız IP</span>
-        <strong><?= e($currentIp ?: 'Bilinmiyor') ?></strong>
-        <small>Kurallar uygulanırken yönetim listesine otomatik eklenir.</small>
+    <div class="security-intro-side">
+        <div class="security-ufw-state <?= $ufwActive ? 'is-on' : 'is-off' ?>"
+            id="securityUfwState" role="status"
+            aria-label="UFW <?= $ufwActive ? 'açık' : 'kapalı' ?>">
+            <span class="security-ufw-switch" aria-hidden="true"><i></i></span>
+            <span>
+                <small>Güvenlik duvarı</small>
+                <strong id="securityUfwStateText">UFW <?= $ufwActive ? 'AÇIK' : 'KAPALI' ?></strong>
+            </span>
+        </div>
+        <div class="security-current-ip">
+            <span>Şu an bağlandığınız IP</span>
+            <strong><?= e($currentIp ?: 'Bilinmiyor') ?></strong>
+            <small>Kurallar uygulanırken yönetim listesine otomatik eklenir.</small>
+        </div>
     </div>
 </article>
 
@@ -125,6 +144,6 @@ $currentIp = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
         </span>
         <span class="pill dim">Teknik ayrıntı</span>
     </summary>
-    <pre class="log" id="securityOutput"><?= e(trim((string) ($ufw['output'] ?? ''))) ?></pre>
+    <pre class="log" id="securityOutput"><?= e($ufwOutput) ?></pre>
 </details>
 <script>document.addEventListener('DOMContentLoaded', () => Astera.pageSecurity());</script>

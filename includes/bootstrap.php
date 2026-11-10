@@ -11,6 +11,7 @@ require_once __DIR__ . '/ami_managers.php';
 require_once __DIR__ . '/tenant.php';
 require_once __DIR__ . '/network.php';
 require_once __DIR__ . '/system_time.php';
+require_once __DIR__ . '/fail2ban.php';
 require_once __DIR__ . '/provisioning.php';
 require_once __DIR__ . '/destinations.php';
 require_once __DIR__ . '/contexts.php';

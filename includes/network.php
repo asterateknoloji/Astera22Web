@@ -7,6 +7,148 @@ function network_interface_name(string $value): string
     return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,30}$/D', $value) === 1 ? $value : '';
 }
 
+function network_live_primary_ipv4(): string
+{
+    $output = [];
+    $exitCode = 0;
+    exec('/usr/sbin/ip -4 route get 1.1.1.1 2>/dev/null', $output, $exitCode);
+    if ($exitCode === 0 && preg_match('/\bsrc\s+([0-9.]+)/', implode(' ', $output), $match)) {
+        $ip = (string) ($match[1] ?? '');
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            return $ip;
+        }
+    }
+    $requestHost = preg_replace('/:\d+$/', '', trim((string) ($_SERVER['HTTP_HOST'] ?? '')));
+    return filter_var($requestHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+        ? $requestHost
+        : PBX_HOST;
+}
+
+function network_sidebar_addresses(): array
+{
+    $output = [];
+    $exitCode = 0;
+    exec('/usr/sbin/ip -j -4 address show up 2>/dev/null', $output, $exitCode);
+    $decoded = $exitCode === 0 ? json_decode(implode("\n", $output), true) : null;
+    $addresses = [];
+    $displayNames = [];
+    try {
+        foreach (network_settings() as $setting) {
+            $displayNames[(string) ($setting['interface_name'] ?? '')]
+                = trim((string) ($setting['display_name'] ?? ''));
+        }
+    } catch (Throwable) {
+        $displayNames = [];
+    }
+    $primaryIp = network_live_primary_ipv4();
+    if (is_array($decoded)) {
+        foreach ($decoded as $interface) {
+            $name = network_interface_name((string) ($interface['ifname'] ?? ''));
+            $interfaceType = $name !== '' ? @file_get_contents('/sys/class/net/' . $name . '/type') : false;
+            if ($name === '' || $name === 'lo' || trim((string) $interfaceType) !== '1') {
+                continue;
+            }
+            $selectedIp = '';
+            foreach ((array) ($interface['addr_info'] ?? []) as $address) {
+                $ip = (string) ($address['local'] ?? '');
+                if (
+                    (string) ($address['family'] ?? '') === 'inet'
+                    && (string) ($address['scope'] ?? '') === 'global'
+                    && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                ) {
+                    if ($selectedIp === '' || empty($address['secondary'])) {
+                        $selectedIp = $ip;
+                    }
+                    if ($ip === $primaryIp) {
+                        $selectedIp = $ip;
+                        break;
+                    }
+                }
+            }
+            if ($selectedIp !== '') {
+                $addresses[] = [
+                    'interface' => $name,
+                    'display_name' => $displayNames[$name] ?? '',
+                    'ip' => $selectedIp,
+                ];
+            }
+        }
+    }
+    return $addresses ?: [['interface' => 'Santral', 'display_name' => '', 'ip' => $primaryIp]];
+}
+
+function network_ipv4_network_cidr(string $cidr): string
+{
+    if (!preg_match('/^([0-9.]+)\/(\d{1,2})$/D', trim($cidr), $match)) {
+        return '';
+    }
+    $ip = (string) $match[1];
+    $prefix = (int) $match[2];
+    $packed = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+        ? inet_pton($ip)
+        : false;
+    if ($packed === false || $prefix < 0 || $prefix > 32) {
+        return '';
+    }
+    $value = unpack('N', $packed)[1];
+    $mask = $prefix === 0 ? 0 : ((0xffffffff << (32 - $prefix)) & 0xffffffff);
+    return long2ip($value & $mask) . '/' . $prefix;
+}
+
+function network_sync_pbx_identity(string $interface, string $ipv4Cidr): void
+{
+    $interface = network_interface_name($interface);
+    if (
+        $interface === ''
+        || !preg_match('/^([0-9.]+)\/\d{1,2}$/D', trim($ipv4Cidr), $match)
+        || filter_var($match[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
+    ) {
+        throw new RuntimeException('Santral ağ kimliği için geçerli statik IPv4 bilgisi gerekli.');
+    }
+    $host = (string) $match[1];
+    $localNetwork = network_ipv4_network_cidr($ipv4Cidr);
+    if ($localNetwork === '') {
+        throw new RuntimeException('Santral yerel ağı hesaplanamadı.');
+    }
+    $script = <<<'SH'
+set -e
+default_interface="$(ip -4 route show default | awk 'NR==1{print $5}')"
+[ "$default_interface" = "$ASTERA_INTERFACE" ] || exit 0
+install -d -m 0750 -o root -g astera-panel /etc/astera
+touch /etc/astera/astera.env
+sed -i \
+    -e '/^ASTERA_PBX_HOST=/d' \
+    -e '/^ASTERA_PBX_LOCAL_NET=/d' \
+    /etc/astera/astera.env
+printf 'ASTERA_PBX_HOST=%s\nASTERA_PBX_LOCAL_NET=%s\n' \
+    "$ASTERA_HOST" "$ASTERA_LOCAL_NET" >>/etc/astera/astera.env
+chown root:astera-panel /etc/astera/astera.env
+chmod 0640 /etc/astera/astera.env
+if [ -f /etc/nginx/sites-available/astera ]; then
+    sed -i '/^[[:space:]]*fastcgi_param[[:space:]]\+ASTERA_PBX_HOST[[:space:]]/d' \
+        /etc/nginx/sites-available/astera
+    nginx -t
+    systemctl reload nginx
+fi
+php_fpm_service="$(systemctl list-unit-files --type=service --no-legend 'php*-fpm.service' \
+    | awk 'NR==1{sub(/\.service$/, "", $1); print $1}')"
+[ -z "$php_fpm_service" ] || systemd-run --quiet --collect --on-active=2s \
+    /bin/systemctl restart "$php_fpm_service"
+SH;
+    $result = pbx_ssh(
+        'ASTERA_INTERFACE=' . escapeshellarg($interface) . ' '
+        . 'ASTERA_HOST=' . escapeshellarg($host) . ' '
+        . 'ASTERA_LOCAL_NET=' . escapeshellarg($localNetwork) . " \\\n"
+        . "/bin/bash -s <<'ASTERA_NETWORK_IDENTITY'\n"
+        . $script . "\nASTERA_NETWORK_IDENTITY"
+    );
+    if (empty($result['ok'])) {
+        throw new RuntimeException(
+            'Santral ağ kimliği güncellenemedi: ' . (string) ($result['output'] ?? '')
+        );
+    }
+}
+
 function network_inventory(): array
 {
     $script = <<<'SH'
@@ -64,7 +206,7 @@ SH;
 function network_settings(): array
 {
     return pbx_relational_json_rows(
-        "SELECT interface_name, dept_id, method, ipv4_cidr, gateway, "
+        "SELECT interface_name, display_name, dept_id, method, ipv4_cidr, gateway, "
         . "array_to_string(dns_servers, ',') AS dns_servers, mtu, connection_uuid, "
         . "rollback_unit, backup_connection, confirmed, applied_at, updated_at, updated_by "
         . "FROM network_interface_settings ORDER BY interface_name"
@@ -78,7 +220,7 @@ function network_setting(string $interface): ?array
         return null;
     }
     $rows = pbx_relational_json_rows(
-        "SELECT interface_name, dept_id, method, ipv4_cidr, gateway, "
+        "SELECT interface_name, display_name, dept_id, method, ipv4_cidr, gateway, "
         . "array_to_string(dns_servers, ',') AS dns_servers, mtu, connection_uuid, "
         . "rollback_unit, backup_connection, confirmed, applied_at, updated_at, updated_by "
         . "FROM network_interface_settings WHERE interface_name = " . pbx_sql_literal($interface)
@@ -94,9 +236,10 @@ function network_save_setting(array $setting): void
         ? 'ARRAY[' . implode(',', array_map('pbx_sql_literal', $dns)) . ']::inet[]'
         : 'ARRAY[]::inet[]';
     $sql = "INSERT INTO network_interface_settings "
-        . "(interface_name,dept_id,method,ipv4_cidr,gateway,dns_servers,mtu,connection_uuid,"
+        . "(interface_name,display_name,dept_id,method,ipv4_cidr,gateway,dns_servers,mtu,connection_uuid,"
         . "rollback_unit,backup_connection,confirmed,applied_at,updated_at,updated_by) VALUES ("
         . pbx_sql_literal((string) $setting['interface_name']) . ','
+        . pbx_sql_literal((string) ($setting['display_name'] ?? '')) . ','
         . pbx_sql_literal((string) $setting['dept_id']) . ','
         . pbx_sql_literal((string) $setting['method']) . ','
         . ((string) ($setting['ipv4_cidr'] ?? '') !== ''
@@ -111,7 +254,8 @@ function network_save_setting(array $setting): void
         . (!empty($setting['applied_at']) ? 'now()' : 'NULL') . ',now(),'
         . pbx_sql_literal(store_actor()) . ') '
         . "ON CONFLICT (interface_name) DO UPDATE SET "
-        . "dept_id=EXCLUDED.dept_id,method=EXCLUDED.method,ipv4_cidr=EXCLUDED.ipv4_cidr,"
+        . "display_name=EXCLUDED.display_name,dept_id=EXCLUDED.dept_id,"
+        . "method=EXCLUDED.method,ipv4_cidr=EXCLUDED.ipv4_cidr,"
         . "gateway=EXCLUDED.gateway,dns_servers=EXCLUDED.dns_servers,mtu=EXCLUDED.mtu,"
         . "connection_uuid=EXCLUDED.connection_uuid,rollback_unit=EXCLUDED.rollback_unit,"
         . "backup_connection=EXCLUDED.backup_connection,confirmed=EXCLUDED.confirmed,"

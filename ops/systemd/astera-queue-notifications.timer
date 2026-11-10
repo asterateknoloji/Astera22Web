@@ -1,0 +1,12 @@
+[Unit]
+Description=Astera PBX kuyruk kaçan çağrı bildirimlerini denetle
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=20s
+AccuracySec=5s
+Persistent=true
+Unit=astera-queue-notifications.service
+
+[Install]
+WantedBy=timers.target

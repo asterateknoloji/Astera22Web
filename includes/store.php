@@ -79,6 +79,26 @@ function store_cache_forget(?string $name = null): void
     unset($cache[$name]);
 }
 
+function &store_request_changes(): array
+{
+    static $changes = [];
+    return $changes;
+}
+
+function store_request_mark_changed(string $name = 'external'): void
+{
+    if ($name === 'pending_changes') {
+        return;
+    }
+    $changes =& store_request_changes();
+    $changes[$name] = true;
+}
+
+function store_request_has_changes(): bool
+{
+    return store_request_changes() !== [];
+}
+
 function store_read(string $name): array
 {
     store_validate_name($name);
@@ -103,6 +123,11 @@ function store_read(string $name): array
 function store_write(string $name, array $data): void
 {
     store_validate_name($name);
+    $data = array_values($data);
+    if (store_read($name) === $data) {
+        return;
+    }
+    store_request_mark_changed($name);
     store_cache_forget($name);
     if (is_file(DATA_PATH . DIRECTORY_SEPARATOR . '.relational-migration-lock')) {
         throw new RuntimeException('Veritabanı geçişi sürüyor; lütfen işlemi kısa süre sonra yeniden deneyin');
@@ -110,11 +135,11 @@ function store_write(string $name, array $data): void
     if (function_exists('pbx_relational_enabled')
         && pbx_relational_enabled()
         && pbx_relational_supports($name)) {
-        pbx_relational_write($name, array_values($data));
+        pbx_relational_write($name, $data);
     } else {
-        store_database_write($name, array_values($data));
+        store_database_write($name, $data);
     }
-    store_local_write($name, array_values($data));
+    store_local_write($name, $data);
     @unlink(DATA_PATH . DIRECTORY_SEPARATOR . '.database-write-pending');
 }
 
@@ -137,10 +162,13 @@ function store_upsert(string $name, array $item, string $key): array
 {
     $rows = store_read($name);
     $found = false;
+    $changed = false;
     $position = count($rows);
     foreach ($rows as $i => $row) {
         if ((string) ($row[$key] ?? '') === (string) $item[$key]) {
-            $rows[$i] = array_merge($row, $item);
+            $merged = array_merge($row, $item);
+            $changed = $merged !== $row;
+            $rows[$i] = $merged;
             $found = true;
             $position = $i;
             break;
@@ -148,8 +176,13 @@ function store_upsert(string $name, array $item, string $key): array
     }
     if (!$found) {
         $rows[] = $item;
+        $changed = true;
     }
     $rows = array_values($rows);
+    if (!$changed) {
+        return $rows;
+    }
+    store_request_mark_changed($name);
     if (
         $name !== 'departments'
         && function_exists('pbx_relational_enabled')
@@ -176,6 +209,7 @@ function store_append_rows(
     if (!$newRows) {
         return $allRows;
     }
+    store_request_mark_changed($name);
     if (
         $name !== 'departments'
         && function_exists('pbx_relational_enabled')

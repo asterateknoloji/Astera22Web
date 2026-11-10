@@ -29,11 +29,14 @@ SOURCE_APP_DIR="${SOURCE_APP_DIR:-/var/www/astera}"
 TARGET_APP_DIR="${TARGET_APP_DIR:-/var/www/astera}"
 DB_NAME="${DB_NAME:-asterisk}"
 SOURCE_PANEL_DOMAIN="${SOURCE_PANEL_DOMAIN:-santral.astera.com.tr}"
+CUSTOMER_NAME="${CUSTOMER_NAME:-}"
 PBX_NAME="${PBX_NAME:-}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"
-if [[ -z "$PANEL_DOMAIN" && -n "$PBX_NAME" ]]; then
-    PANEL_DOMAIN="${PBX_NAME,,}.asterapbx.net"
-fi
+PBX_HOSTNAME="${PBX_HOSTNAME:-}"
+ALERT_EMAIL="teknik@asterateknoloji.com.tr"
+SSH_ALERT_EMAIL="tuncay@asterateknoloji.com.tr"
+ALARM_EMAILS="tuncay@asterateknoloji.com.tr,teknik@asterateknoloji.com.tr"
+MAIL_TEST_CONFIRMED="${MAIL_TEST_CONFIRMED:-}"
 ASTERISK_SERIES="${ASTERISK_SERIES:-22}"
 ASTERISK_BUILD_JOBS="${ASTERISK_BUILD_JOBS:-2}"
 POSTGRESQL_MAJOR="${POSTGRESQL_MAJOR:-18}"
@@ -50,6 +53,9 @@ Kullanim:
   sudo bash install_new_pbx.sh [secenekler]
 
 Secenekler:
+  --customer-name ADI  Musteri / firma adini belirler.
+  --pbx-name ADI       PBX kisa adini belirler (ornek: pbx001).
+  --hostname ADI       Sunucu hostname degerini belirler (ornek: ASTERA-PBX001).
   --activate   Kurulum sonunda Asterisk'i baslatir. Eski santral devredeyken
                kullanmak ayni trunk'in iki kez kayit olmasina neden olabilir.
   --force      Hedefte bulunan uygulama/veritabani verisini yedekleyip uzerine
@@ -62,8 +68,13 @@ Istege bagli ortam degiskenleri:
   SOURCE_SSH_PASSWORD='...'        (anahtar yoksa; komut satirina yazmayin)
   SOURCE_APP_DIR=/var/www/astera
   SOURCE_PANEL_DOMAIN=santral.astera.com.tr
+  CUSTOMER_NAME='Musteri Firma Adi' (girilmezse başlangıçta sorulur)
   PBX_NAME=pbx002                   (pbx002.asterapbx.net oluşturur)
+  PBX_HOSTNAME=ASTERA-PBX002        (girilmezse PBX_NAME'den oluşturulur)
   PANEL_DOMAIN=pbx002.example.com   (PBX_NAME yerine kullanılabilir)
+  MAIL_TEST_CONFIRMED=yes           (yalnızca e-posta teslimi önceden doğrulandıysa)
+  Alarm bildirimleri otomatik olarak tuncay@asterateknoloji.com.tr ve
+  teknik@asterateknoloji.com.tr adreslerine gönderilir.
   LETSENCRYPT_EMAIL=admin@example.com
   CLOUDFLARE_API_TOKEN='...'        (komut geçmişine yazmak yerine export edin)
   SOURCE_HOST=192.168.181.74 TARGET_HOST=192.168.181.87
@@ -82,6 +93,21 @@ USAGE
 
 while (($#)); do
     case "$1" in
+        --customer-name)
+            (($# >= 2)) || { echo "--customer-name icin bir deger zorunludur." >&2; exit 2; }
+            CUSTOMER_NAME="$2"
+            shift
+            ;;
+        --pbx-name)
+            (($# >= 2)) || { echo "--pbx-name icin bir deger zorunludur." >&2; exit 2; }
+            PBX_NAME="$2"
+            shift
+            ;;
+        --hostname)
+            (($# >= 2)) || { echo "--hostname icin bir deger zorunludur." >&2; exit 2; }
+            PBX_HOSTNAME="$2"
+            shift
+            ;;
         --activate) ACTIVATE=1 ;;
         --force) FORCE=1 ;;
         --yes) ASSUME_YES=1 ;;
@@ -106,6 +132,26 @@ if [[ "${ID:-}" != "ubuntu" ]]; then
     echo "Bu betik Ubuntu icin hazirlanmistir; algilanan: ${ID:-bilinmiyor}" >&2
     exit 1
 fi
+
+if [[ -t 0 ]]; then
+    if [[ -z "$CUSTOMER_NAME" ]]; then
+        read -r -p "Musteri / firma adi: " CUSTOMER_NAME
+    fi
+    if [[ -z "$PBX_NAME" && -z "$PANEL_DOMAIN" ]]; then
+        read -r -p "PBX kisa adi (ornek: pbx002): " PBX_NAME
+    fi
+fi
+if [[ -z "$PANEL_DOMAIN" && -n "$PBX_NAME" ]]; then
+    PANEL_DOMAIN="${PBX_NAME,,}.asterapbx.net"
+fi
+hostname_seed="${PBX_NAME:-${PANEL_DOMAIN%%.*}}"
+hostname_seed="${hostname_seed^^}"
+hostname_seed="${hostname_seed//[^A-Z0-9-]/-}"
+default_pbx_hostname="ASTERA-${hostname_seed:-PBX}"
+if [[ -z "$PBX_HOSTNAME" && -t 0 ]]; then
+    read -r -p "Sunucu hostname [$default_pbx_hostname]: " PBX_HOSTNAME
+fi
+PBX_HOSTNAME="${PBX_HOSTNAME:-$default_pbx_hostname}"
 
 mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR"
 touch "$LOG_FILE"
@@ -140,6 +186,10 @@ valid_ipv4 "$TARGET_HOST" || die "Gecersiz hedef IP: $TARGET_HOST"
 [[ "$DB_NAME" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "Gecersiz veritabani adi."
 [[ "$SOURCE_PANEL_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
     || die "Geçersiz SOURCE_PANEL_DOMAIN."
+[[ -n "$CUSTOMER_NAME" && ${#CUSTOMER_NAME} -le 120 && "$CUSTOMER_NAME" != *$'\n'* && "$CUSTOMER_NAME" != *$'\r'* ]] \
+    || die "Musteri adi zorunludur ve en fazla 120 karakter olabilir."
+[[ "$PBX_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] \
+    || die "Gecersiz hostname. Ornek: ASTERA-PBX01"
 [[ "$PANEL_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
     || die "PBX_NAME veya geçerli PANEL_DOMAIN zorunludur."
 [[ "$SOURCE_APP_DIR" == /* && "$TARGET_APP_DIR" == /* ]] || die "Uygulama yollari mutlak olmalidir."
@@ -156,6 +206,9 @@ if ((ASSUME_YES == 0)); then
     echo
     echo "Kaynak (yalnizca okunacak): $SOURCE_SSH_USER@$SOURCE_HOST"
     echo "Hedef (kurulum yapilacak):   $TARGET_HOST"
+    echo "Musteri:                     $CUSTOMER_NAME"
+    echo "Sunucu hostname:             $PBX_HOSTNAME"
+    echo "Bildirim e-postasi:          $ALERT_EMAIL"
     echo "Uygulama:                    $SOURCE_APP_DIR -> $TARGET_APP_DIR"
     echo "Veritabani:                  $DB_NAME"
     ((ACTIVATE == 1)) && echo "UYARI: --activate verildi; yeni Asterisk trunk kayitlarini baslatabilir."
@@ -164,6 +217,29 @@ if ((ASSUME_YES == 0)); then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+
+log "Hostname ve saat dilimi ayarlaniyor"
+hostnamectl set-hostname "$PBX_HOSTNAME"
+hosts_temp="$(mktemp /etc/.hosts.XXXXXX)"
+awk -v hostname="$PBX_HOSTNAME" '
+    BEGIN { found = 0 }
+    $1 == "127.0.1.1" {
+        if (!found) {
+            print "127.0.1.1\t" hostname
+            found = 1
+        }
+        next
+    }
+    { print }
+    END {
+        if (!found) print "127.0.1.1\t" hostname
+    }
+' /etc/hosts >"$hosts_temp"
+chmod --reference=/etc/hosts "$hosts_temp"
+chown --reference=/etc/hosts "$hosts_temp"
+mv "$hosts_temp" /etc/hosts
+timedatectl set-timezone Europe/Istanbul
+
 log "Temel paketler kuruluyor"
 
 # A previous PostgreSQL repository entry may exist without its signing key.
@@ -184,6 +260,11 @@ if [[ -f /etc/apt/sources.list ]] && grep -Fq 'apt.postgresql.org' /etc/apt/sour
 fi
 
 apt-get update
+log "Yarim kalmis dpkg islemleri ve paket bagimliliklari onariliyor"
+dpkg --configure -a
+apt-get --fix-broken install -y
+log "Ubuntu sistem guncellemeleri kuruluyor"
+apt-get upgrade -y
 apt-get install -y --no-install-recommends ca-certificates curl gnupg
 install -d -m 0755 /usr/share/keyrings
 curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
@@ -208,6 +289,10 @@ fi
 rm -rf /etc/postgresql /var/lib/postgresql
 
 log "PostgreSQL ${POSTGRESQL_MAJOR} kuruluyor"
+printf '%s\n' \
+    "postfix postfix/mailname string $PANEL_DOMAIN" \
+    "postfix postfix/main_mailer_type select Internet Site" \
+    | debconf-set-selections
 apt-get install -y --no-install-recommends \
     ca-certificates curl wget gnupg lsb-release openssl rsync openssh-client openssh-server sshpass \
     build-essential pkg-config git subversion \
@@ -217,38 +302,252 @@ apt-get install -y --no-install-recommends \
     libopus-dev libsrtp2-dev libspandsp-dev libical-dev libneon27-dev \
     unixodbc unixodbc-dev odbc-postgresql libpq-dev \
     "postgresql-${POSTGRESQL_MAJOR}" "postgresql-client-${POSTGRESQL_MAJOR}" \
-    nginx certbot python3-certbot-nginx ufw fail2ban network-manager \
+    nginx certbot python3 python3-certbot-nginx ufw fail2ban network-manager postfix mailutils systemd-timesyncd \
     iproute2 net-tools iputils-ping dnsutils ethtool traceroute mtr-tiny \
     php-fpm php-cli php-pgsql php-mbstring php-curl php-xml php-zip php-intl php-gd
+
+log "Postfix, test e-postasi ve root SSH giris bildirimi hazirlaniyor"
+printf '%s\n' "$PANEL_DOMAIN" >/etc/mailname
+postconf -e "myhostname = $PANEL_DOMAIN"
+postconf -e 'myorigin = /etc/mailname'
+postconf -e 'inet_interfaces = loopback-only'
+postconf -e 'mydestination = $myhostname, localhost.$mydomain, localhost'
+systemctl enable --now postfix.service
+printf 'Astera PBX Ubuntu mail testi\nMusteri: %s\nSunucu: %s\nTarih/Saat: %s\n' \
+    "$CUSTOMER_NAME" "$PBX_HOSTNAME" "$(date '+%Y-%m-%d %H:%M:%S %Z')" \
+    | timeout 20s /usr/bin/mail \
+        -s "TEST - $PBX_HOSTNAME - $CUSTOMER_NAME" "$ALERT_EMAIL"
+touch "$STATE_DIR/mail-test-submitted"
+chmod 600 "$STATE_DIR/mail-test-submitted"
+mail_test_confirmed=0
+if [[ "$MAIL_TEST_CONFIRMED" != "yes" ]]; then
+    if [[ -t 0 ]]; then
+        read -r -p "Test e-postasi $ALERT_EMAIL adresine ulasti mi? [e/H]: " mail_answer
+        if [[ "${mail_answer,,}" == "e" || "${mail_answer,,}" == "evet" ]]; then
+            mail_test_confirmed=1
+        else
+            log "UYARI: E-posta teslimi dogrulanmadi; kurulum devam ediyor"
+        fi
+    else
+        log "UYARI: E-posta teslimi etkilesimsiz kurulumda dogrulanamadi; kurulum devam ediyor"
+    fi
+else
+    mail_test_confirmed=1
+fi
+if ((mail_test_confirmed == 1)); then
+    touch "$STATE_DIR/mail-test-confirmed"
+    rm -f "$STATE_DIR/mail-test-unconfirmed"
+else
+    touch "$STATE_DIR/mail-test-unconfirmed"
+    rm -f "$STATE_DIR/mail-test-confirmed"
+fi
+chmod 600 "$STATE_DIR"/mail-test-{confirmed,unconfirmed} 2>/dev/null || true
+
+install -d -m 0750 -o root -g root /etc/astera
+{
+    printf 'CUSTOMER_NAME=%q\n' "${CUSTOMER_NAME:-ASTERA}"
+    printf 'ALERT_EMAIL=%q\n' "$SSH_ALERT_EMAIL"
+} >/etc/astera/ssh-alert.conf
+chmod 0600 /etc/astera/ssh-alert.conf
+cat >/usr/local/sbin/root-ssh-alert.sh <<'ROOT_SSH_ALERT'
+#!/usr/bin/env bash
+set -u
+
+[[ "${PAM_TYPE:-}" == "open_session" ]] || exit 0
+[[ "${PAM_USER:-}" == "root" ]] || exit 0
+
+ip="${PAM_RHOST:-}"
+[[ "$ip" != "127.0.0.1" && "$ip" != "::1" ]] || exit 0
+
+customer="ASTERA"
+recipient="teknik@asterateknoloji.com.tr"
+if [[ -r /etc/astera/ssh-alert.conf ]]; then
+    # shellcheck disable=SC1091
+    source /etc/astera/ssh-alert.conf
+    customer="${CUSTOMER_NAME:-$customer}"
+    recipient="${ALERT_EMAIL:-$recipient}"
+fi
+server="$(hostname)"
+
+if ! {
+    printf 'Root SSH girisi algilandi\n'
+    printf 'Musteri: %s\n' "$customer"
+    printf 'Sunucu: %s\n' "$server"
+    printf 'Tarih/Saat: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'Kullanici: root\n'
+    printf 'Kaynak IP: %s\n' "${ip:-bilinmiyor}"
+} | timeout 20s /usr/bin/mail \
+    -r root@astera.com.tr \
+    -s "Alert: $customer Root Access - ${ip:-bilinmiyor}" "$recipient"; then
+    logger -t astera-root-ssh-alert "Root SSH bildirim e-postasi gonderilemedi: ${ip:-bilinmiyor}"
+fi
+exit 0
+ROOT_SSH_ALERT
+chown root:root /usr/local/sbin/root-ssh-alert.sh
+chmod 0700 /usr/local/sbin/root-ssh-alert.sh
+if ! grep -Fq 'pam_exec.so /usr/local/sbin/root-ssh-alert.sh' /etc/pam.d/sshd; then
+    printf '\nsession optional pam_exec.so /usr/local/sbin/root-ssh-alert.sh\n' >>/etc/pam.d/sshd
+fi
 
 log "Webmin resmi deposu ve paketi kuruluyor"
 WEBMIN_REPO_SCRIPT="$(mktemp /var/tmp/webmin-setup-repo.XXXXXX.sh)"
 curl -fsSL --retry 3 \
     https://raw.githubusercontent.com/webmin/webmin/master/webmin-setup-repo.sh \
     -o "$WEBMIN_REPO_SCRIPT"
-sh "$WEBMIN_REPO_SCRIPT" --force --stable
+webmin_repo_ready=0
+if sh "$WEBMIN_REPO_SCRIPT" --force --stable; then
+    webmin_repo_ready=1
+else
+    log "Webmin deposu kurulamadi; resmi GitHub surum paketi kullanilacak"
+fi
 rm -f "$WEBMIN_REPO_SCRIPT"
-apt-get update
-apt-get install -y --install-recommends webmin
-systemctl enable --now webmin
+
+webmin_installed=0
+if ((webmin_repo_ready == 1)); then
+    if apt-get update && apt-get install -y --install-recommends webmin; then
+        webmin_installed=1
+    else
+        log "Webmin deposundan paket kurulumu basarisiz; GitHub paketi denenecek"
+    fi
+fi
+
+if ((webmin_installed == 0)); then
+    # A failed repository setup can leave an unusable source behind. It must
+    # not break later apt operations while download.webmin.com TLS is faulty.
+    rm -f \
+        /etc/apt/sources.list.d/webmin.list \
+        /etc/apt/sources.list.d/webmin-stable.list \
+        /etc/apt/sources.list.d/webmin-stable.sources
+
+    WEBMIN_RELEASE_JSON="$(mktemp /var/tmp/webmin-release.XXXXXX.json)"
+    WEBMIN_DEB_FILE="$(mktemp /var/tmp/webmin.XXXXXX.deb)"
+    webmin_download_ok=0
+    if curl -fsSL --retry 3 \
+        https://api.github.com/repos/webmin/webmin/releases/latest \
+        -o "$WEBMIN_RELEASE_JSON"; then
+        WEBMIN_ASSET="$(
+            python3 - "$WEBMIN_RELEASE_JSON" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as release_file:
+    release = json.load(release_file)
+for asset in release.get("assets", []):
+    if re.fullmatch(r"webmin_[0-9.]+_all\.deb", str(asset.get("name", ""))):
+        print(asset.get("browser_download_url", ""))
+        print(asset.get("digest", ""))
+        break
+PY
+        )" || WEBMIN_ASSET=''
+        WEBMIN_DEB_URL="$(printf '%s\n' "$WEBMIN_ASSET" | sed -n '1p')"
+        WEBMIN_DEB_DIGEST="$(printf '%s\n' "$WEBMIN_ASSET" | sed -n '2p')"
+        if [[ "$WEBMIN_DEB_URL" == https://github.com/webmin/webmin/releases/download/*/*_all.deb ]] \
+            && curl -fL --retry 3 "$WEBMIN_DEB_URL" -o "$WEBMIN_DEB_FILE"; then
+            if [[ "$WEBMIN_DEB_DIGEST" =~ ^sha256:([0-9a-fA-F]{64})$ ]]; then
+                printf '%s  %s\n' "${BASH_REMATCH[1],,}" "$WEBMIN_DEB_FILE" | sha256sum -c -
+            fi
+            if apt-get install -y --install-recommends "$WEBMIN_DEB_FILE"; then
+                webmin_download_ok=1
+                webmin_installed=1
+            fi
+        fi
+    fi
+    rm -f "$WEBMIN_RELEASE_JSON" "$WEBMIN_DEB_FILE"
+    if ((webmin_download_ok == 0)); then
+        log "UYARI: Webmin indirilemedi; PBX kurulumu Webmin olmadan devam edecek"
+    fi
+fi
+
+if ((webmin_installed == 1)); then
+    systemctl enable --now webmin
+fi
 
 log "Ethernet kartlari NetworkManager yonetimine aliniyor"
 install -d -m 0755 /etc/netplan
-cat >/etc/netplan/99-astera-networkmanager.yaml <<'NETPLAN'
+target_interface="$(
+    ip -o -4 address show scope global \
+        | awk -v target="$TARGET_HOST" '$4 ~ ("^" target "/") {print $2; exit}'
+)"
+[[ -n "$target_interface" ]] || die "Hedef IP'nin Ethernet arayuzu bulunamadi: $TARGET_HOST"
+target_cidr="$(
+    ip -o -4 address show dev "$target_interface" scope global \
+        | awk -v target="$TARGET_HOST" '$4 ~ ("^" target "/") {print $4; exit}'
+)"
+[[ -n "$target_cidr" ]] || die "Hedef IP CIDR bilgisi bulunamadi: $TARGET_HOST"
+netplan_backup="/root/astera-netplan-backup-$(date +%Y%m%d-%H%M%S)"
+install -d -m 0700 "$netplan_backup"
+shopt -s nullglob
+netplan_files=(/etc/netplan/*.yaml /etc/netplan/*.yml)
+((${#netplan_files[@]} == 0)) || cp -a "${netplan_files[@]}" "$netplan_backup/"
+rm -f /etc/netplan/*.yaml /etc/netplan/*.yml
+shopt -u nullglob
+cat >/etc/netplan/01-astera-static.yaml <<'NETPLAN'
 network:
   version: 2
   renderer: NetworkManager
 NETPLAN
-chmod 0600 /etc/netplan/99-astera-networkmanager.yaml
+mapfile -t live_interfaces < <(
+    for interface_path in /sys/class/net/*; do
+        interface="${interface_path##*/}"
+        [[ -e "$interface_path/device" ]] || continue
+        ip -o -4 address show dev "$interface" scope global | grep -q . \
+            && printf '%s\n' "$interface"
+    done | sort -u
+)
+printf '  ethernets:\n' >>/etc/netplan/01-astera-static.yaml
+for interface in "${live_interfaces[@]}"; do
+    [[ "$interface" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,30}$ ]] \
+        || die "Gecersiz Ethernet arayuzu: $interface"
+    if [[ "$interface" == "$target_interface" ]]; then
+        interface_cidr="$target_cidr"
+    else
+        interface_cidr="$(ip -o -4 address show dev "$interface" scope global | awk 'NR==1 {print $4}')"
+    fi
+    [[ -n "$interface_cidr" ]] || continue
+    interface_gateway="$(ip -4 route show default dev "$interface" | awk 'NR==1 {print $3}')"
+    interface_dns="$(
+        resolvectl dns "$interface" 2>/dev/null \
+            | awk -F': ' 'NF > 1 {print $2}' \
+            | tr ' ' '\n' \
+            | awk '/^[0-9]{1,3}(\.[0-9]{1,3}){3}$/' \
+            | paste -sd, - \
+            || true
+    )"
+    [[ -n "$interface_dns" ]] \
+        || interface_dns="$(awk '/^nameserver [0-9]/{print $2}' /etc/resolv.conf | paste -sd, - || true)"
+    {
+        printf '    %s:\n' "$interface"
+        printf '      dhcp4: false\n'
+        printf '      addresses: [%s]\n' "$interface_cidr"
+        if [[ -n "$interface_gateway" ]]; then
+            printf '      routes:\n'
+            printf '        - to: default\n'
+            printf '          via: %s\n' "$interface_gateway"
+        fi
+        if [[ -n "$interface_dns" ]]; then
+            printf '      nameservers:\n'
+            printf '        addresses: [%s]\n' "$interface_dns"
+        fi
+    } >>/etc/netplan/01-astera-static.yaml
+done
+chmod 0600 /etc/netplan/01-astera-static.yaml
 netplan generate
-systemctl enable --now NetworkManager
-netplan apply
+systemctl enable NetworkManager
+systemctl disable systemd-networkd.service systemd-networkd.socket \
+    systemd-networkd-wait-online.service 2>/dev/null || true
+if systemctl is-active --quiet NetworkManager; then
+    log "NetworkManager zaten etkin; mevcut SSH baglantisini korumak icin yeniden baslatilmadi"
+else
+    log "NetworkManager sonraki yeniden baslatmada etkinlesecek; canli SSH baglantisinda netplan apply calistirilmadi"
+fi
 
 log "Hedef SSH servisi hazirlaniyor"
 install -d -m 0755 /run/sshd /etc/ssh/sshd_config.d
 cat >/etc/ssh/sshd_config.d/99-astera-root.conf <<'SSHD_CONFIG'
 PermitRootLogin yes
 PasswordAuthentication yes
+UsePAM yes
 SSHD_CONFIG
 chmod 0644 /etc/ssh/sshd_config.d/99-astera-root.conf
 sshd -t
@@ -354,6 +653,12 @@ remote "set -e
     command -v rsync >/dev/null
     sudo -n -u postgres pg_dump --version >/dev/null
     sudo -n -u postgres psql -Atqc \"SELECT 1 FROM pg_database WHERE datname='$(printf '%s' "$DB_NAME" | sed "s/'/''/g")'\" | grep -qx 1
+    for helper in backup_restore_root.sh backup_dump_root.sh backup_files_root.sh \
+        network_routes_root.sh pjsip_health_root.sh system_update_root.sh \
+        system_power_root.sh fail2ban_root.sh fail2ban_mail_root.sh; do
+        test -f $(printf '%q' "$SOURCE_APP_DIR")/bin/\$helper \
+            || { printf 'Eksik kaynak yardimci dosya: %s\\n' \"\$helper\" >&2; exit 1; }
+    done
     printf 'Kaynak hostname: '; hostname
     asterisk -rx 'core show version' 2>/dev/null | sed -n '1p'
     printf 'Kaynak uygulama: '; readlink -f $(printf '%q' "$SOURCE_APP_DIR")"
@@ -606,8 +911,11 @@ chgrp postgres "$WORK_DIR" "$WORK_DIR/roles.sql" "$WORK_DIR/database.sql"
 chmod 0750 "$WORK_DIR"
 chmod 0640 "$WORK_DIR/roles.sql" "$WORK_DIR/database.sql"
 
-log "Sistem ve PostgreSQL saat dilimi Europe/Istanbul olarak ayarlaniyor"
-timedatectl set-timezone Europe/Istanbul
+log "NTP ve PostgreSQL saat ayarlari yapiliyor"
+if ! systemctl list-unit-files systemd-timesyncd.service --no-legend 2>/dev/null \
+    | grep -Fq 'systemd-timesyncd.service'; then
+    apt-get install -y systemd-timesyncd
+fi
 install -d -m 0755 -o root -g root /etc/systemd/timesyncd.conf.d
 cat >/etc/systemd/timesyncd.conf.d/astera.conf <<'NTP'
 [Time]
@@ -670,9 +978,12 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$NETWORK_SETTINGS_MIGRA
 
 log "Hedef makinenin Ethernet bilgileri veritabanina isleniyor"
 mapfile -t TARGET_NETWORK_INTERFACES < <(
-    ip -o -4 address show scope global \
-        | awk '{print $2}' \
-        | sort -u
+    for interface_path in /sys/class/net/*; do
+        interface="${interface_path##*/}"
+        [[ -e "$interface_path/device" ]] || continue
+        ip -o -4 address show dev "$interface" scope global | grep -q . \
+            && printf '%s\n' "$interface"
+    done | sort -u
 )
 for interface in "${TARGET_NETWORK_INTERFACES[@]}"; do
     [[ "$interface" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,30}$ ]] \
@@ -738,6 +1049,13 @@ ON CONFLICT (interface_name) DO UPDATE SET
     updated_by = EXCLUDED.updated_by;
 SQL
 done
+network_interface_names="$(IFS=,; printf '%s' "${TARGET_NETWORK_INTERFACES[*]}")"
+[[ -n "$network_interface_names" ]] || die "Hedef makinede IPv4 Ethernet arayuzu bulunamadi."
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    -v interface_names="$network_interface_names" <<'SQL'
+DELETE FROM network_interface_settings
+WHERE NOT (interface_name = ANY (string_to_array(:'interface_names', ',')));
+SQL
 
 PANEL_OPERATIONAL_WRITE_MIGRATION="$TARGET_APP_DIR/migrations/026_panel_operational_write_permissions.sql"
 [[ -s "$PANEL_OPERATIONAL_WRITE_MIGRATION" ]] \
@@ -788,11 +1106,75 @@ for migration in \
     040_system_backup_schedule.sql \
     041_feature_takeover_settings.sql \
     042_ami_managers.sql \
-    043_extension_qualify_default.sql; do
+    043_extension_qualify_default.sql \
+    044_network_interface_display_name.sql \
+    045_feature_code_settings.sql \
+    046_extension_pickup_groups.sql \
+    047_cdr_report_indexes.sql \
+    048_queue_missed_call_notifications.sql \
+    049_queue_missed_call_report_index.sql \
+    050_queue_notification_templates.sql \
+    051_trunk_alarm_defaults.sql; do
     migration_path="$TARGET_APP_DIR/migrations/$migration"
     [[ -s "$migration_path" ]] || die "Migration dosyasi bulunamadi: $migration_path"
     sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$migration_path"
 done
+log "Alarm e-posta ayarlari ve alicilari hazirlaniyor"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    -v alarm_emails="$ALARM_EMAILS" <<'SQL'
+INSERT INTO callcenter_alarm_smtp_settings (
+    dept_id,
+    enabled,
+    smtp_host,
+    smtp_port,
+    encryption,
+    username,
+    password_encrypted,
+    from_email,
+    from_name,
+    timeout_seconds
+)
+SELECT
+    dept_id,
+    TRUE,
+    '127.0.0.1',
+    25,
+    'none',
+    '',
+    '',
+    'alarm@asterateknoloji.com.tr',
+    'Astera Santral ve Callcenter',
+    15
+FROM astera_tenants
+ON CONFLICT (dept_id) DO UPDATE
+SET enabled = TRUE,
+    smtp_host = EXCLUDED.smtp_host,
+    smtp_port = EXCLUDED.smtp_port,
+    encryption = EXCLUDED.encryption,
+    username = EXCLUDED.username,
+    password_encrypted = EXCLUDED.password_encrypted,
+    from_email = EXCLUDED.from_email,
+    from_name = EXCLUDED.from_name,
+    timeout_seconds = EXCLUDED.timeout_seconds,
+    updated_at = now();
+
+INSERT INTO callcenter_alarm_recipients (dept_id, email, display_name, active)
+SELECT
+    tenant.dept_id,
+    lower(btrim(recipient.email)),
+    'Astera teknik bildirim',
+    TRUE
+FROM astera_tenants AS tenant
+CROSS JOIN LATERAL regexp_split_to_table(
+    :'alarm_emails',
+    '[[:space:],;]+'
+) AS recipient(email)
+WHERE btrim(recipient.email) <> ''
+ON CONFLICT (dept_id, email) DO UPDATE
+SET active = TRUE,
+    display_name = EXCLUDED.display_name,
+    updated_at = now();
+SQL
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<SQL
 GRANT CONNECT ON DATABASE "$DB_NAME" TO asterisk;
 GRANT USAGE ON SCHEMA public TO asterisk;
@@ -937,8 +1319,21 @@ ssh-keyscan -H 127.0.0.1 localhost "$TARGET_HOST" 2>/dev/null \
 chown astera-panel:astera-panel /etc/astera/id_ed25519 /etc/astera/id_ed25519.pub \
     /etc/astera/known_hosts
 chmod 600 /etc/astera/id_ed25519 /etc/astera/known_hosts
+customer_env_value="${CUSTOMER_NAME//\\/\\\\}"
+customer_env_value="${customer_env_value//\"/\\\"}"
+target_local_network="$(
+    python3 - "$target_cidr" <<'PY'
+import ipaddress
+import sys
+
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+)"
+[[ -n "$target_local_network" ]] || die "Hedef yerel agi hesaplanamadi: $target_cidr"
 cat >/etc/astera/astera.env <<ENV
+ASTERA_CUSTOMER_NAME="$customer_env_value"
 ASTERA_PBX_HOST=$TARGET_HOST
+ASTERA_PBX_LOCAL_NET=$target_local_network
 ASTERA_PBX_SSH_HOST=127.0.0.1
 ASTERA_SSH_USER=root
 ASTERA_SSH_PORT=22
@@ -1066,7 +1461,6 @@ server {
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:$PHP_SOCKET;
-        fastcgi_param ASTERA_PBX_HOST $TARGET_HOST;
         fastcgi_param ASTERA_PBX_SSH_HOST 127.0.0.1;
         fastcgi_param ASTERA_SSH_USER root;
         fastcgi_param ASTERA_SSH_PASS "";
@@ -1126,6 +1520,12 @@ fi
 if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-alarms.timer" ]]; then
     cp "$TARGET_APP_DIR/ops/systemd/astera-alarms.timer" /etc/systemd/system/
 fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.timer" /etc/systemd/system/
+fi
 if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-fidelio-fias.service" ]]; then
     cp "$TARGET_APP_DIR/ops/systemd/astera-fidelio-fias.service" /etc/systemd/system/
 fi
@@ -1138,6 +1538,18 @@ fi
 if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-network-routes.service" ]]; then
     cp "$TARGET_APP_DIR/ops/systemd/astera-network-routes.service" /etc/systemd/system/
 fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.timer" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/networkmanager/90-astera-network-routes" ]]; then
+    install -d -m 0755 /etc/NetworkManager/dispatcher.d
+    install -m 0755 -o root -g root \
+        "$TARGET_APP_DIR/ops/networkmanager/90-astera-network-routes" \
+        /etc/NetworkManager/dispatcher.d/90-astera-network-routes
+fi
 install -d -m 0770 -o astera-panel -g astera-panel /var/backups/astera
 install -m 0750 -o root -g root \
     "$TARGET_APP_DIR/bin/backup_restore_root.sh" /usr/local/sbin/astera-backup-restore
@@ -1148,7 +1560,15 @@ install -m 0750 -o root -g root \
 install -m 0750 -o root -g root \
     "$TARGET_APP_DIR/bin/network_routes_root.sh" /usr/local/sbin/astera-network-routes
 install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/pjsip_health_root.sh" /usr/local/sbin/astera-pjsip-health
+install -m 0750 -o root -g root \
     "$TARGET_APP_DIR/bin/system_update_root.sh" /usr/local/sbin/astera-system-update
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/system_power_root.sh" /usr/local/sbin/astera-system-power
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/fail2ban_root.sh" /usr/local/sbin/astera-fail2ban
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/fail2ban_mail_root.sh" /usr/local/sbin/astera-fail2ban-mail
 install -d -m 0750 -o root -g astera-panel /etc/astera
 touch /etc/astera/network-routes.conf
 chown root:astera-panel /etc/astera/network-routes.conf
@@ -1165,6 +1585,18 @@ astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-update *
 SUDOERS
 chmod 0440 /etc/sudoers.d/astera-system-update
 visudo -cf /etc/sudoers.d/astera-system-update >/dev/null
+cat >/etc/sudoers.d/astera-system-power <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-power reboot
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-power poweroff
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-system-power
+visudo -cf /etc/sudoers.d/astera-system-power >/dev/null
+cat >/etc/sudoers.d/astera-fail2ban <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-fail2ban *
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-fail2ban
+visudo -cf /etc/sudoers.d/astera-fail2ban >/dev/null
+/usr/local/sbin/astera-fail2ban configure yes 86400 600 5 "" yes "$ALERT_EMAIL"
 systemctl daemon-reload
 systemctl enable "$PHP_FPM_SERVICE" nginx
 systemctl restart "$PHP_FPM_SERVICE" nginx
@@ -1174,6 +1606,8 @@ systemctl restart "$PHP_FPM_SERVICE" nginx
     && systemctl enable --now astera-cdr-partitions.timer
 [[ -f /etc/systemd/system/astera-alarms.timer ]] \
     && systemctl enable --now astera-alarms.timer
+[[ -f /etc/systemd/system/astera-queue-notifications.timer ]] \
+    && systemctl enable --now astera-queue-notifications.timer
 [[ -f /etc/systemd/system/astera-fidelio-fias.service ]] \
     && systemctl enable --now astera-fidelio-fias.service
 [[ -f /etc/systemd/system/astera-syslog-export.service ]] \
@@ -1182,6 +1616,8 @@ systemctl restart "$PHP_FPM_SERVICE" nginx
     && systemctl enable --now astera-backup-worker.service
 [[ -f /etc/systemd/system/astera-network-routes.service ]] \
     && systemctl enable --now astera-network-routes.service
+[[ -f /etc/systemd/system/astera-pjsip-health.timer ]] \
+    && systemctl enable --now astera-pjsip-health.timer
 
 if command -v sshd >/dev/null 2>&1; then
     log "SSH 22 ve 45555 portlarini dinleyecek sekilde ayarlaniyor"
@@ -1229,11 +1665,25 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
 fi
 
 log "Kurulum dogrulaniyor"
+[[ "$(hostname)" == "$PBX_HOSTNAME" ]]
+[[ "$(timedatectl show --property=Timezone --value)" == "Europe/Istanbul" ]]
+grep -Eq "^127\\.0\\.1\\.1[[:space:]]+$PBX_HOSTNAME([[:space:]]|$)" /etc/hosts
+command -v mail >/dev/null
+systemctl is-active --quiet postfix.service
+test -f "$STATE_DIR/mail-test-submitted"
+test -x /usr/local/sbin/root-ssh-alert.sh
+[[ "$(grep -Fxc 'session optional pam_exec.so /usr/local/sbin/root-ssh-alert.sh' /etc/pam.d/sshd)" == "1" ]]
+sshd_effective_config="$(sshd -T 2>/dev/null)"
+awk '$1 == "usepam" && $2 == "yes" { found = 1 } END { exit !found }' \
+    <<<"$sshd_effective_config"
+grep -Fq '[[ "$ip" != "127.0.0.1" && "$ip" != "::1" ]] || exit 0' \
+    /usr/local/sbin/root-ssh-alert.sh
 php -l "$TARGET_APP_DIR/webphone.php"
 php -l "$TARGET_APP_DIR/api.php"
 php -l "$TARGET_APP_DIR/includes/generator.php"
 php -l "$TARGET_APP_DIR/includes/feature_codes.php"
 php -l "$TARGET_APP_DIR/pages/features.php"
+php -l "$TARGET_APP_DIR/pages/queue_missed_calls.php"
 php -l "$TARGET_APP_DIR/Agent/login.php"
 php -l "$TARGET_APP_DIR/Agent/agent_dashboard_v2.php"
 php -l "$TARGET_APP_DIR/Supervisor/fop_abone.php"
@@ -1241,6 +1691,7 @@ php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/agentdetay.php"
 php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/anket.php"
 php -l "$TARGET_APP_DIR/includes/alarms.php"
 php -l "$TARGET_APP_DIR/bin/check_alarms.php"
+php -l "$TARGET_APP_DIR/bin/queue_missed_call_notifier.php"
 php -l "$TARGET_APP_DIR/includes/integrations.php"
 php -l "$TARGET_APP_DIR/bin/fidelio_fias_service.php"
 php -l "$TARGET_APP_DIR/pages/integrations.php"
@@ -1253,11 +1704,20 @@ php -l "$TARGET_APP_DIR/pages/backup.php"
 php -l "$TARGET_APP_DIR/backup_download.php"
 php -l "$TARGET_APP_DIR/includes/system_updates.php"
 php -l "$TARGET_APP_DIR/system_updates.php"
+php -l "$TARGET_APP_DIR/includes/system_power.php"
+php -l "$TARGET_APP_DIR/system_power.php"
+php -l "$TARGET_APP_DIR/includes/fail2ban.php"
+php -l "$TARGET_APP_DIR/pages/fail2ban.php"
+php -l "$TARGET_APP_DIR/fail2ban.php"
 bash -n "$TARGET_APP_DIR/bin/backup_restore_root.sh"
 bash -n "$TARGET_APP_DIR/bin/backup_dump_root.sh"
 bash -n "$TARGET_APP_DIR/bin/backup_files_root.sh"
 bash -n "$TARGET_APP_DIR/bin/network_routes_root.sh"
+bash -n "$TARGET_APP_DIR/bin/pjsip_health_root.sh"
 bash -n "$TARGET_APP_DIR/bin/system_update_root.sh"
+bash -n "$TARGET_APP_DIR/bin/system_power_root.sh"
+bash -n "$TARGET_APP_DIR/bin/fail2ban_root.sh"
+bash -n "$TARGET_APP_DIR/bin/fail2ban_mail_root.sh"
 php -l "$TARGET_APP_DIR/pages/provisioning.php"
 php -l "$TARGET_APP_DIR/includes/provisioning.php"
 sudo -u postgres psql -d "$DB_NAME" -Atqc 'SELECT current_database()' | grep -Fxq "$DB_NAME"
@@ -1306,16 +1766,28 @@ sudo -u postgres psql -d "$DB_NAME" -Atqc \
 sudo -u postgres psql -d "$DB_NAME" -Atqc \
     "SELECT to_regclass('public.feature_takeover_settings')" \
     | grep -Fxq 'feature_takeover_settings'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='network_interface_settings'
+       AND column_name='display_name'" | grep -Fxq 'display_name'
 command -v nmcli >/dev/null
-systemctl is-active --quiet NetworkManager
-nmcli -t -f TYPE device status | grep -Fxq 'ethernet'
+systemctl is-enabled --quiet NetworkManager
+if systemctl is-active --quiet NetworkManager; then
+    nmcli -t -f TYPE device status | grep -Fxq 'ethernet'
+else
+    test -s /etc/netplan/99-astera-networkmanager.yaml
+fi
 test -x /usr/local/sbin/astera-backup-restore
 test -x /usr/local/sbin/astera-backup-dump
 test -x /usr/local/sbin/astera-backup-files
 systemctl is-active --quiet astera-backup-worker.service
 test -x /usr/local/sbin/astera-network-routes
 systemctl is-active --quiet astera-network-routes.service
+test -x /usr/local/sbin/astera-pjsip-health
+systemctl is-enabled --quiet astera-pjsip-health.timer
+systemctl is-enabled --quiet astera-queue-notifications.timer
 test -x /usr/local/sbin/astera-system-update
+test -x /usr/local/sbin/astera-system-power
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
     "https://$PANEL_DOMAIN/webphone.php" >/dev/null
 curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
@@ -1438,6 +1910,47 @@ SQL
     log "Alan adı ve TLS sertifikası yapılandırılıyor"
     bash "$TARGET_APP_DIR/configure_pbx_ssl.sh" "$PANEL_DOMAIN"
 
+    if [[ ! -r "$ASTERISK_MODULE_DIR/codec_opus.so" ]]; then
+        log "codec_opus bulunamadi; WebRTC codec uretimi ulaw/alaw icin uyarlaniyor"
+        python3 - "$TARGET_APP_DIR/includes/generator.php" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+body = path.read_text(encoding="utf-8")
+legacy = """            if (!in_array('opus', $codecs, true)) {
+                array_unshift($codecs, 'opus');
+            }
+"""
+current = """            // Stock/custom prompts are signed-linear audio. Some Asterisk
+            // installations can pass Opus through but cannot transcode prompts
+            // to Opus, so keep a narrow-band prompt codec ahead of Opus.
+            $codecs = array_values(array_filter(
+                $codecs,
+                static fn($codec): bool => strtolower((string) $codec) !== 'opus'
+            ));
+            $codecs[] = 'opus';
+"""
+fallback = """            // ASTERA: codec_opus translator is unavailable on this PBX.
+            $codecs = array_values(array_filter(
+                $codecs,
+                static fn($codec) => strtolower((string) $codec) !== 'opus'
+            ));
+            if (!$codecs) {
+                $codecs = ['ulaw', 'alaw'];
+            }
+"""
+if "codec_opus translator is unavailable" not in body:
+    source = current if current in body else legacy if legacy in body else None
+    if source is None:
+        raise SystemExit("generator.php Opus blogu desteklenen bicimde degil")
+    path.write_text(body.replace(source, fallback, 1), encoding="utf-8")
+PY
+        chown astera-panel:www-data "$TARGET_APP_DIR/includes/generator.php"
+        chmod 0640 "$TARGET_APP_DIR/includes/generator.php"
+        php -l "$TARGET_APP_DIR/includes/generator.php" >/dev/null
+    fi
+
     log "WebRTC yapılandırılıyor"
     PANEL_DOMAIN="$PANEL_DOMAIN" APP_DIR="$TARGET_APP_DIR" \
         bash "$TARGET_APP_DIR/configure_webrtc.sh"
@@ -1467,10 +1980,17 @@ else
     systemctl stop asterisk.service 2>/dev/null || true
 fi
 
+log "Guncel kurulum betigi /root altina kopyalaniyor"
+install -m 0755 -o root -g root \
+    "$TARGET_APP_DIR/install_new_pbx.sh" /root/install_new_pbx.sh
+
 cat >"$STATE_DIR/completed" <<STATE
 completed_at=$(date -Is)
 source=$SOURCE_HOST
 target=$TARGET_HOST
+customer=$CUSTOMER_NAME
+hostname=$PBX_HOSTNAME
+alert_email=$ALERT_EMAIL
 database=$DB_NAME
 application=$TARGET_APP_DIR
 activated=$ACTIVATE
@@ -1483,6 +2003,25 @@ echo "Panel/WebPhone: https://$PANEL_DOMAIN/webphone.php"
 echo "Hedef IP ile:   https://$TARGET_HOST/webphone.php"
 echo "Hedef yedegi:   $BACKUP_DIR"
 echo "Eski IP raporu: $old_ip_report"
+if ((mail_test_confirmed == 1)); then
+    mail_check_line="[x] Test e-postasi dogrulandi: $ALERT_EMAIL"
+else
+    mail_check_line="[!] Test e-postasi gonderildi ancak teslimi dogrulanmadi: $ALERT_EMAIL"
+fi
+cat <<CHECKLIST
+
+Yeni sunucu kontrol listesi
+  [x] Musteri adi kaydedildi: $CUSTOMER_NAME
+  [x] PBX kisa adi: ${PBX_NAME:-ozel alan adi kullanildi}
+  [x] Hostname ayarlandi: $PBX_HOSTNAME
+  [x] Saat dilimi: Europe/Istanbul
+  [x] Ubuntu guncellemeleri kuruldu
+  [x] Postfix ve mailutils kuruldu
+  $mail_check_line
+  [x] Root SSH bildirim betigi ve PAM kaydi kuruldu
+  [x] 127.0.0.1 ve ::1 bildirim istisnalari etkin
+  [ ] Mevcut oturumu kapatmadan ikinci terminalden root SSH girisini test edin
+CHECKLIST
 if ((ACTIVATE == 0)); then
     echo
     echo "Asterisk guvenlik amaciyla BASLATILMADI."

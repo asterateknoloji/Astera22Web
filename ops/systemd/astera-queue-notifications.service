@@ -1,0 +1,16 @@
+[Unit]
+Description=Astera PBX kuyruk kaçan çağrı bildirimleri
+After=network-online.target postgresql.service asterisk.service postfix.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=astera-panel
+Group=astera-panel
+WorkingDirectory=/var/www/astera
+ExecStart=/usr/bin/php /var/www/astera/bin/queue_missed_call_notifier.php
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full

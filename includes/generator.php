@@ -188,6 +188,14 @@ function generate_all_configs(): array
 function apply_to_pbx(bool $force = false): array
 {
     if (!$force) {
+        if (!store_request_has_changes()) {
+            return [
+                'ok' => true,
+                'unchanged' => true,
+                'pending_count' => store_pending_count(),
+                'output' => 'Değişiklik yapılmadı; bekleyen işlem eklenmedi.',
+            ];
+        }
         $dept = ast_sanitize_id((string) ($_POST['dept'] ?? ''));
         if ($dept === '') {
             $dept = (string) (current_dept_id() ?? '*');
@@ -203,6 +211,15 @@ function apply_to_pbx(bool $force = false): array
     }
     $applyId = store_apply_begin();
     try {
+    $pendingActions = [];
+    foreach (store_read('pending_changes') as $pendingChange) {
+        foreach ((array) ($pendingChange['actions'] ?? []) as $pendingAction) {
+            $pendingAction = ast_sanitize_id((string) $pendingAction);
+            if ($pendingAction !== '') {
+                $pendingActions[$pendingAction] = true;
+            }
+        }
+    }
     $paths = generate_all_configs();
     $dirs = [];
     foreach (departments() as $dept) {
@@ -250,39 +267,65 @@ function apply_to_pbx(bool $force = false): array
     }
     $prep[] = "ss -lnt | grep -q ':8088' || systemctl restart asterisk";
     $apply = pbx_apply_files($paths, $prep);
-    if (preg_match('/^pjsip_trunks\.conf: yüklendi$/m', (string) ($apply['output'] ?? ''))) {
-        $enabledRegistrations = [];
-        foreach (store_read('trunks') as $trunk) {
-            if (!empty($trunk['enabled']) && (string) ($trunk['type'] ?? 'register') === 'register') {
-                $enabledRegistrations[] = ast_sanitize_id((string) ($trunk['id'] ?? ''));
+    $changedFiles = array_values((array) ($apply['changed'] ?? []));
+    $pjsipChanged = array_intersect(
+        $changedFiles,
+        ['pjsip.conf', 'pjsip_endpoints.conf', 'pjsip_trunks.conf']
+    ) !== [];
+    $enabledRegistrations = [];
+    foreach (store_read('trunks') as $trunk) {
+        if (!empty($trunk['enabled']) && (string) ($trunk['type'] ?? 'register') === 'register') {
+            $enabledRegistrations[] = ast_sanitize_id((string) ($trunk['id'] ?? ''));
+        }
+    }
+    $enabledRegistrations = array_values(array_filter($enabledRegistrations));
+    if ($pjsipChanged && $enabledRegistrations) {
+        $runtimeHealthy = true;
+        foreach ($enabledRegistrations as $id) {
+            $endpointStatus = pbx_cli('pjsip show endpoint ' . $id);
+            $identifyStatus = pbx_cli('pjsip show identify ' . $id);
+            if (
+                !preg_match('/^\s*Endpoint:\s+' . preg_quote($id, '/') . '\b/m', $endpointStatus)
+                || !preg_match('/^\s*Identify:\s+' . preg_quote($id, '/') . '\//m', $identifyStatus)
+            ) {
+                $runtimeHealthy = false;
+                break;
             }
         }
-        $enabledRegistrations = array_values(array_filter($enabledRegistrations));
-        if ($enabledRegistrations) {
-            $registrationStatus = '';
-            for ($attempt = 0; $attempt < 3; $attempt++) {
-                usleep(750000);
-                $commands = array_map(
-                    static fn(string $id): string => "asterisk -rx 'pjsip send register {$id}'",
-                    $enabledRegistrations
-                );
-                pbx_ssh(implode("\n", $commands));
-                usleep(750000);
-                $registrationStatus = pbx_cli('pjsip show registrations');
-                $allRegistered = true;
-                foreach ($enabledRegistrations as $id) {
-                    if (!preg_match('/^\s*' . preg_quote($id, '/') . '\/\S+\s+\S+\s+Registered\b/m', $registrationStatus)) {
-                        $allRegistered = false;
-                        break;
-                    }
-                }
-                if ($allRegistered) {
+        if (!$runtimeHealthy) {
+            pbx_cli('pjsip reload');
+            $apply['output'] = trim($apply['output'] . "\nPJSIP çalışma nesneleri yenilendi.");
+        }
+        $registrationStatus = '';
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $commands = array_map(
+                static fn(string $id): string => "asterisk -rx 'pjsip send register {$id}'",
+                $enabledRegistrations
+            );
+            pbx_ssh(implode("\n", $commands));
+            usleep(1000000);
+            $registrationStatus = pbx_cli('pjsip show registrations');
+            $allRegistered = true;
+            foreach ($enabledRegistrations as $id) {
+                if (!preg_match('/^\s*' . preg_quote($id, '/') . '\/\S+\s+\S+\s+Registered\b/m', $registrationStatus)) {
+                    $allRegistered = false;
                     break;
                 }
             }
-            $apply['output'] = trim($apply['output'] . "\nTrunk kayıtları yenilendi.\n" . $registrationStatus);
+            if ($allRegistered) {
+                break;
+            }
+        }
+        $apply['output'] = trim($apply['output'] . "\nTrunk kayıtları doğrulandı ve yenilendi.\n" . $registrationStatus);
+    }
+    $needsDatabaseSync = false;
+    foreach (array_keys($pendingActions) as $pendingAction) {
+        if (preg_match('/(?:department|extension|bulk_extensions|outbound|blacklist)/', $pendingAction) === 1) {
+            $needsDatabaseSync = true;
+            break;
         }
     }
+    if ($needsDatabaseSync) {
     $databaseOperations = [
         ['action' => 'delete_tree', 'family' => 'BL'],
     ];
@@ -383,6 +426,7 @@ function apply_to_pbx(bool $force = false): array
     if (empty($databaseSync['ok'])) {
         $apply['ok'] = false;
     }
+    }
     if (!empty($apply['ok'])) {
         store_clear_pending();
     }
@@ -397,13 +441,78 @@ function apply_to_pbx(bool $force = false): array
     }
 }
 
+function apply_trunk_toggle_to_pbx(array $trunk): array
+{
+    $id = ast_sanitize_id((string) ($trunk['id'] ?? ''));
+    if ($id === '') {
+        throw new InvalidArgumentException('Geçersiz trunk kimliği.');
+    }
+
+    $trunkConfig = [];
+    foreach (generate_all_configs() as $local => $remote) {
+        if ($remote === '/etc/asterisk/pjsip_trunks.conf') {
+            $trunkConfig[$local] = $remote;
+            break;
+        }
+    }
+    if (!$trunkConfig) {
+        throw new RuntimeException('Trunk yapılandırma dosyası üretilemedi.');
+    }
+
+    $apply = pbx_apply_files($trunkConfig);
+    if (empty($apply['ok'])) {
+        return $apply;
+    }
+
+    if (
+        !empty($trunk['enabled'])
+        && (string) ($trunk['type'] ?? 'register') === 'register'
+    ) {
+        $registrationOutput = pbx_cli('pjsip send register ' . $id);
+        $apply['output'] = trim(
+            (string) ($apply['output'] ?? '')
+            . "\nYalnız seçilen trunk için kayıt isteği gönderildi.\n"
+            . $registrationOutput
+        );
+    }
+    $apply['pending_count'] = store_pending_count();
+    return $apply;
+}
+
 function generate_pjsip_base(): string
 {
     $pub = defined('PBX_PUBLIC_IP') ? trim((string) PBX_PUBLIC_IP) : '';
-    $local = defined('PBX_LOCAL_NET') ? trim((string) PBX_LOCAL_NET) : '192.168.0.0/16';
+    $localInput = trim(astera_env(
+        'ASTERA_PBX_LOCAL_NETS',
+        defined('PBX_LOCAL_NET') ? (string) PBX_LOCAL_NET : '192.168.0.0/16'
+    ));
+    $localNetworks = [];
+    foreach (preg_split('/[\s,;]+/', $localInput, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $network) {
+        [$address, $prefix] = array_pad(explode('/', $network, 2), 2, null);
+        $isIpv4 = filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+        $isIpv6 = filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+        $maximum = $isIpv4 ? 32 : 128;
+        if (
+            (!$isIpv4 && !$isIpv6)
+            || $prefix === null
+            || preg_match('/^\d{1,3}$/D', $prefix) !== 1
+            || (int) $prefix < 0
+            || (int) $prefix > $maximum
+        ) {
+            continue;
+        }
+        $localNetworks[] = $address . '/' . (int) $prefix;
+    }
+    if (!$localNetworks) {
+        $localNetworks[] = '192.168.0.0/16';
+    }
     $nat = '';
     if ($pub !== '' && !preg_match('/^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/', $pub)) {
-        $nat = "external_signaling_address={$pub}\nexternal_media_address={$pub}\nlocal_net={$local}\n";
+        $nat = "external_signaling_address={$pub}\nexternal_media_address={$pub}\n"
+            . implode('', array_map(
+                static fn(string $network): string => "local_net={$network}\n",
+                array_values(array_unique($localNetworks))
+            ));
     }
     return <<<CONF
 ;========================================================
@@ -412,8 +521,8 @@ function generate_pjsip_base(): string
 
 [global]
 type=global
-user_agent=Asterisk-22-Astera
-endpoint_identifier_order=ip,username,anonymous
+user_agent=Astera
+endpoint_identifier_order=ip,header,username,anonymous
 
 [transport-udp]
 type=transport
@@ -510,7 +619,14 @@ function generate_pjsip_endpoints(): string
         $lang = ast_sanitize_id((string) ($ext['language'] ?? 'tr')) ?: 'tr';
         $webrtc = !empty($ext['webrtc']);
         $qualify = max(0, (int) ($ext['qualify'] ?? 60));
-        $grp = dept_group_no($dept);
+        $pickupGroups = extension_pickup_groups($ext['pickup_groups'] ?? [1]);
+        if (!$pickupGroups) {
+            $pickupGroups = [1];
+        }
+        $namedPickupGroups = implode(',', array_map(
+            static fn(int $group): string => 'astera_' . $dept . '_' . $group,
+            $pickupGroups
+        ));
         $mail = !empty($ext['vm_enabled']) ? "mailboxes={$num}@" . dept_code_of($dept) . "\n" : '';
         if ($webrtc) {
             $codecs = $ext['codecs'] ?? ['alaw', 'ulaw'];
@@ -554,8 +670,8 @@ aors={$sip}
 callerid="{$name}" <{$num}>
 dtmf_mode={$dtmf}
 language={$lang}
-{$transportLine}call_group={$grp}
-pickup_group={$grp}
+{$transportLine}named_call_group={$namedPickupGroups}
+named_pickup_group={$namedPickupGroups}
 {$mail}{$allow}
 
 CONF;
@@ -582,7 +698,20 @@ function generate_pjsip_trunks(): string
 {
     $out = "; ASTERA trunklar\n\n";
     $any = false;
-    foreach (store_read('trunks') as $trunk) {
+    $trunks = store_read('trunks');
+    $identityDomainCounts = [];
+    foreach ($trunks as $trunk) {
+        if (array_key_exists('enabled', $trunk) && !$trunk['enabled']) {
+            continue;
+        }
+        $identityDomain = strtolower(trim((string) (
+            $trunk['from_domain'] ?? $trunk['host'] ?? ''
+        )));
+        if ($identityDomain !== '') {
+            $identityDomainCounts[$identityDomain] = ($identityDomainCounts[$identityDomain] ?? 0) + 1;
+        }
+    }
+    foreach ($trunks as $trunk) {
         if (array_key_exists('enabled', $trunk) && !$trunk['enabled']) {
             continue;
         }
@@ -612,6 +741,30 @@ function generate_pjsip_trunks(): string
         $contact = 'sip:' . ($user !== '' ? $user . '@' : '') . $hostPort;
         $qualifyFrequency = max(0, (int) ($trunk['qualify_frequency'] ?? 60));
         $supportPath = !empty($trunk['support_path']) ? 'yes' : 'no';
+        $identifyLines = '';
+        $headerIdentifyBlock = '';
+        $identifyMatches = $trunk['identify_matches'] ?? [];
+        if (is_array($identifyMatches)) {
+            foreach ($identifyMatches as $identifyMatch) {
+                $identifyMatch = trim((string) $identifyMatch);
+                if ($identifyMatch !== '' && $identifyMatch !== $host) {
+                    $identifyLines .= 'match=' . ast_quote($identifyMatch) . "\n";
+                }
+            }
+        }
+        $identityDomain = strtolower(trim((string) (
+            $trunk['from_domain'] ?? $trunk['host'] ?? ''
+        )));
+        if ($identityDomain !== '' && ($identityDomainCounts[$identityDomain] ?? 0) === 1) {
+            $identityDomainRegex = preg_quote($identityDomain, '/');
+            $headerIdentifyBlock = <<<CONF
+[{$id}-header]
+type=identify
+endpoint={$id}
+match_header=From: /@{$identityDomainRegex}/
+
+CONF;
+        }
         $dtmfMode = (string) ($trunk['dtmf_mode'] ?? 'auto');
         if (!in_array($dtmfMode, ['auto', 'rfc4733', 'inband', 'info'], true)) {
             $dtmfMode = 'auto';
@@ -652,8 +805,10 @@ CONF;
 type=identify
 endpoint={$id}
 match={$host}
+{$identifyLines}
 
 CONF;
+        $out .= $headerIdentifyBlock;
         if ($type === 'register' && $user !== '') {
             $authRejectionPermanent = 'no';
             $expiration = 3600;
@@ -662,8 +817,7 @@ CONF;
             $out .= <<<CONF
 [{$id}]
 type=registration
-endpoint={$id}
-line=yes
+line=no
 outbound_auth={$id}
 server_uri=sip:{$hostPort}
 client_uri=sip:{$user}@{$hostPort}
@@ -686,6 +840,7 @@ CONF;
 [{$id}]
 type=endpoint
 aors={$id}
+identify_by=username,ip,header
 disallow=all
 {$authLines}allow={$allow}
 context={$inboundContext}
@@ -783,6 +938,68 @@ function takeover_call_init(string $code): string
         . " same => n,ExecIf(\$[\"\${ASTERA_TAKEOVER_ACTIVE}\"=\"1\"]?Set(CALLERID(name)=\${ASTERA_TAKEOVER_TARGET}))\n";
 }
 
+function generate_standard_feature_dialplan(
+    string $deptId,
+    string $code,
+    string $intContext,
+    ?array $settings = null
+): string
+{
+    $settings ??= feature_code_settings($deptId);
+    $feature = static fn(string $key): string => ast_quote(feature_code_value($settings, $key));
+    $out = '';
+
+    if (($dial = $feature('echo_test')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n same => n,Echo()\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('speaking_clock')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n same => n,SayUnixTime()\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('call_forward_activate')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n";
+        $out .= " same => n,Read(CFnum,vm-enter-num-to-call,8,,1,4)\n";
+        $out .= " same => n,Set(DB(CF/{$code}/\${CALLERID(num)})=\${CFnum})\n";
+        $out .= " same => n,Playback(beep)\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('call_forward_deactivate')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n";
+        $out .= " same => n,NoOp(\${DB_DELETE(CF/{$code}/\${CALLERID(num)})})\n";
+        $out .= " same => n,Playback(beep)\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('dnd_activate')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n";
+        $out .= " same => n,Set(DB(DND/{$code}/\${CALLERID(num)})=YES)\n";
+        $out .= " same => n,Playback(beep)\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('dnd_deactivate')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n";
+        $out .= " same => n,NoOp(\${DB_DELETE(DND/{$code}/\${CALLERID(num)})})\n";
+        $out .= " same => n,Playback(beep)\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('call_pickup')) !== '') {
+        $out .= "exten => {$dial},1,Pickup()\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('voicemail_self')) !== '') {
+        $out .= "exten => {$dial},1,VoiceMailMain(\${CALLERID(num)}@{$code})\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('voicemail_prompt')) !== '') {
+        $out .= "exten => {$dial},1,VoiceMailMain(@{$code})\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('queue_pause')) !== '') {
+        $out .= "exten => {$dial},1,PauseQueueMember(,PJSIP/\${CHANNEL(endpoint)})\n";
+        $out .= " same => n,Playback(beep)\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('queue_unpause')) !== '') {
+        $out .= "exten => {$dial},1,UnpauseQueueMember(,PJSIP/\${CHANNEL(endpoint)})\n";
+        $out .= " same => n,Playback(beep)\n same => n,Hangup()\n\n";
+    }
+    if (($dial = $feature('directory')) !== '') {
+        $out .= "exten => {$dial},1,Answer()\n";
+        $out .= " same => n,Directory({$code},{$intContext},f)\n same => n,Hangup()\n\n";
+    }
+    return $out;
+}
+
 function generate_extensions(): string
 {
     $blocks = [];
@@ -817,7 +1034,6 @@ function generate_extensions(): string
         $subBody = "exten => s,1,Set(CHANNEL(accountcode)={$code})\n";
         $subBody .= " same => n,Set(CDR(userfield)=\${IF(\$[\"\${ASTERA_TRANSFER_AUDIT}\" != \"\"]?\${ASTERA_TRANSFER_AUDIT}:{$code})})\n";
         $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_TRANSFER_AUDIT}\" = \"\" & (\"\${ASTERA_CID_INBOUND}\" != \"\" | \"\${ASTERA_CID_DEST}\" != \"\")]?Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST}))\n";
-        $subBody .= " same => n,Set(CDR(accountcode)={$code})\n";
         $subBody .= " same => n,Set(CDR(cnum)=\${CALLERID(num)})\n";
         $subBody .= " same => n,Set(CDR(cnam)=\${CALLERID(name)})\n";
         $subBody .= " same => n,ExecIf(\$[\"\${ASTERA_DID}\" != \"\"]?Set(CDR(did)=\${ASTERA_DID}))\n";
@@ -1003,7 +1219,8 @@ function generate_extensions(): string
                 $internal .= " same => n,Set(__ASTERA_CID_DEST_TYPE=QUEUE)\n";
                 $internal .= " same => n,Set(__ASTERA_CID_DEST={$safeCidAudit})\n";
                 $internal .= " same => n,Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST})\n";
-                $internal .= " same => n,Set(CALLERID(name)={$safeCid}\${CALLERID(name)})\n";
+                $internal .= " same => n,Set(CALLERID(name)={$safeCid}\${IF(\$[\"\${CALLERID(name)}\" = \"\"]?\${CALLERID(num)}:\${CALLERID(name)})})\n";
+                $internal .= " same => n,Set(__ASTERA_TRANSFER_NAME=\${CALLERID(name)})\n";
             }
             $internal .= " same => n,Answer()\n";
             $announce = ast_quote((string) ($q['announce'] ?? ''));
@@ -1121,7 +1338,8 @@ function generate_extensions(): string
                 $internal .= " same => n,Set(__ASTERA_CID_DEST_TYPE=RINGGROUP)\n";
                 $internal .= " same => n,Set(__ASTERA_CID_DEST={$safeCidAudit})\n";
                 $internal .= " same => n,Set(CDR(userfield)={$code}|CID|\${ASTERA_CID_INBOUND}|\${ASTERA_CID_DEST_TYPE}|\${ASTERA_CID_DEST})\n";
-                $internal .= " same => n,Set(CALLERID(name)={$safeCid}\${CALLERID(name)})\n";
+                $internal .= " same => n,Set(CALLERID(name)={$safeCid}\${IF(\$[\"\${CALLERID(name)}\" = \"\"]?\${CALLERID(num)}:\${CALLERID(name)})})\n";
+                $internal .= " same => n,Set(__ASTERA_TRANSFER_NAME=\${CALLERID(name)})\n";
             }
             
             // Announcement
@@ -1277,6 +1495,27 @@ function generate_extensions(): string
                     'strip_count' => max(0, (int) ($storedRoute['strip'] ?? 0)),
                 ]];
             }
+            $indexedRoutePatterns = [];
+            foreach (array_values($routePatterns) as $patternIndex => $routePattern) {
+                if (is_array($routePattern)) {
+                    $routePattern['_astera_order'] = $patternIndex;
+                    $indexedRoutePatterns[] = $routePattern;
+                }
+            }
+            usort($indexedRoutePatterns, static function (array $left, array $right): int {
+                $patternInfo = static function (array $row): array {
+                    $pattern = ast_dial_pattern((string) ($row['match'] ?? $row['pattern'] ?? ''));
+                    $body = ltrim($pattern, '_');
+                    $variableLength = preg_match('/[.!]/', $body) === 1 ? 1 : 0;
+                    $literalCount = preg_match_all('/[0-9*#+]/', $body);
+                    return [$variableLength, -$literalCount, -strlen($body)];
+                };
+                $comparison = $patternInfo($left) <=> $patternInfo($right);
+                return $comparison !== 0
+                    ? $comparison
+                    : ((int) ($left['_astera_order'] ?? 0) <=> (int) ($right['_astera_order'] ?? 0));
+            });
+            $routePatterns = $indexedRoutePatterns;
             foreach ($routePatterns as $routePattern) {
                 if (!is_array($routePattern)) {
                     continue;
@@ -1375,18 +1614,28 @@ function generate_extensions(): string
             $trunkRow = find_by('trunks', 'id', $trunk);
             $priSpan = $trunkRow ? null : find_by('pri_spans', 'id', $trunk);
             if ($priSpan && !empty($priSpan['enabled']) && (string) ($priSpan['dept'] ?? '') === $id) {
-                $trunkCid = pstn_digits($cid);
+                $trunkCid = preg_replace('/\D+/', '', $cid) ?? '';
                 if ($trunkCid !== '') {
                     $outbound .= " same => n,Set(CALLERID(num)={$trunkCid})\n";
                 }
             } else {
                 $trunkType = (string) ($trunkRow['type'] ?? 'register');
-                $trunkCid = pstn_digits((string) ($trunkRow['outbound_caller_id'] ?? ''));
+                // Caller identity is signalling data, not a dialled destination. Preserve
+                // the exact number format configured by the carrier (for example 0..., 90...).
+                $trunkCid = preg_replace(
+                    '/\D+/',
+                    '',
+                    (string) ($trunkRow['outbound_caller_id'] ?? '')
+                ) ?? '';
                 if ($trunkCid === '') {
-                    $trunkCid = pstn_digits((string) (($trunkRow['from_user'] ?? '') ?: ($trunkRow['username'] ?? '')));
+                    $trunkCid = preg_replace(
+                        '/\D+/',
+                        '',
+                        (string) (($trunkRow['from_user'] ?? '') ?: ($trunkRow['username'] ?? ''))
+                    ) ?? '';
                 }
                 if ($trunkCid === '') {
-                    $trunkCid = pstn_digits($cid);
+                    $trunkCid = preg_replace('/\D+/', '', $cid) ?? '';
                 }
                 $cidOption = (string) ($trunkRow['cid_option'] ?? ($trunkType === 'peer' ? 'allow_any' : 'force_trunk'));
                 if (!in_array($cidOption, ['allow_any', 'block_foreign', 'remove_cnam', 'force_trunk'], true)) {
@@ -1397,15 +1646,23 @@ function generate_extensions(): string
                 } elseif ($cidOption === 'remove_cnam') {
                     $outbound .= " same => n,Set(CALLERID(name)=)\n";
                 } elseif ($cidOption === 'block_foreign') {
-                    $allowedCids = [$trunkCid, pstn_digits($cid)];
+                    $allowedCids = [$trunkCid, preg_replace('/\D+/', '', $cid) ?? ''];
                     foreach (store_read('extensions') as $extension) {
                         if ((string) ($extension['dept'] ?? '') === $id) {
-                            $allowedCids[] = pstn_digits((string) ($extension['cid_num'] ?? ''));
+                            $allowedCids[] = preg_replace(
+                                '/\D+/',
+                                '',
+                                (string) ($extension['cid_num'] ?? '')
+                            ) ?? '';
                         }
                     }
                     foreach (store_read('inbound') as $inboundRoute) {
                         if ((string) ($inboundRoute['dept'] ?? '') === $id) {
-                            $allowedCids[] = pstn_digits((string) ($inboundRoute['did'] ?? ''));
+                            $allowedCids[] = preg_replace(
+                                '/\D+/',
+                                '',
+                                (string) ($inboundRoute['did'] ?? '')
+                            ) ?? '';
                         }
                     }
                     $allowedCids = array_values(array_unique(array_filter($allowedCids)));
@@ -1556,6 +1813,7 @@ function generate_extensions(): string
         $parkExt = ast_sanitize_id((string) ($park['parkext'] ?? '700')) ?: '700';
         $parkedCtx = 'parked-' . $code;
 
+        $standardFeatureDialplan = generate_standard_feature_dialplan($id, $code, $int);
         $featExtra = generate_feat_extras($id, $code, $int, $outC, $parkExt);
 
         $blocks[] = <<<CONF
@@ -1572,56 +1830,7 @@ include => {$parkedCtx}
 [{$int}]
 {$internal}
 [{$feat}]
-exten => *43,1,Answer()
- same => n,Echo()
- same => n,Hangup()
-
-exten => *65,1,Answer()
- same => n,SayUnixTime()
- same => n,Hangup()
-
-exten => *72,1,Answer()
- same => n,Read(CFnum,vm-enter-num-to-call,8,,1,4)
- same => n,Set(DB(CF/{$code}/\${CALLERID(num)})=\${CFnum})
- same => n,Playback(beep)
- same => n,Hangup()
-
-exten => *73,1,Answer()
- same => n,NoOp(\${DB_DELETE(CF/{$code}/\${CALLERID(num)})})
- same => n,Playback(beep)
- same => n,Hangup()
-
-exten => *78,1,Answer()
- same => n,Set(DB(DND/{$code}/\${CALLERID(num)})=YES)
- same => n,Playback(beep)
- same => n,Hangup()
-
-exten => *79,1,Answer()
- same => n,NoOp(\${DB_DELETE(DND/{$code}/\${CALLERID(num)})})
- same => n,Playback(beep)
- same => n,Hangup()
-
-exten => *8,1,Pickup()
- same => n,Hangup()
-
-exten => *97,1,VoiceMailMain(\${CALLERID(num)}@{$code})
- same => n,Hangup()
-
-exten => *98,1,VoiceMailMain(@{$code})
- same => n,Hangup()
-
-exten => *45,1,PauseQueueMember(,PJSIP/\${CHANNEL(endpoint)})
- same => n,Playback(beep)
- same => n,Hangup()
-
-exten => *46,1,UnpauseQueueMember(,PJSIP/\${CHANNEL(endpoint)})
- same => n,Playback(beep)
- same => n,Hangup()
-
-exten => *411,1,Answer()
- same => n,Directory({$code},{$int},f)
- same => n,Hangup()
-
+{$standardFeatureDialplan}
 exten => {$parkExt},1,Park(parking-{$code})
  same => n,Hangup()
 
@@ -1764,7 +1973,11 @@ function generate_queues(): string
         }
         foreach ((array) ($q['members'] ?? []) as $member) {
             $member = (string) $member;
-            $channel = member_channel($dept, $member);
+            $normalizedMember = normalize_group_member($member);
+            $extension = find_ext($dept, $normalizedMember);
+            $channel = $extension && extension_is_dahdi($extension)
+                ? 'Local/' . $normalizedMember . '@int-' . dept_code_of($dept) . '/n'
+                : member_channel($dept, $member);
             if ($channel !== '') {
                 $penalty = (int) ($memberPenalties[$member] ?? 1);
                 $out .= "member => {$channel},{$penalty}\n";
@@ -2125,16 +2338,20 @@ function parking_for(string $deptId): array
 function generate_feat_extras(string $deptId, string $code, string $intCtx, string $outCtx, string $parkExt): string
 {
     $out = '';
-    foreach (store_read('extensions') as $ext) {
-        if ((string) ($ext['dept'] ?? '') !== $deptId) {
-            continue;
+    $featureSettings = feature_code_settings($deptId);
+    $intercomPrefix = ast_quote(feature_code_value($featureSettings, 'intercom_prefix'));
+    if ($intercomPrefix !== '') {
+        foreach (store_read('extensions') as $ext) {
+            if ((string) ($ext['dept'] ?? '') !== $deptId) {
+                continue;
+            }
+            $num = ast_sanitize_id((string) ($ext['exten'] ?? ''));
+            $channel = extension_dial_channel($ext);
+            if ($num === '' || $channel === '') {
+                continue;
+            }
+            $out .= "exten => {$intercomPrefix}{$num},1,Page({$channel},qi)\n same => n,Hangup()\n\n";
         }
-        $num = ast_sanitize_id((string) ($ext['exten'] ?? ''));
-        $channel = extension_dial_channel($ext);
-        if ($num === '' || $channel === '') {
-            continue;
-        }
-        $out .= "exten => *80{$num},1,Page({$channel},qi)\n same => n,Hangup()\n\n";
     }
 
     foreach (store_read('flows') as $flow) {
@@ -2185,7 +2402,6 @@ function generate_from_pstn(): string
     $blacklistGuard = static function (string $dept): string {
         $code = dept_code_of($dept);
         return " same => n,Set(CHANNEL(accountcode)={$code})\n"
-            . " same => n,Set(CDR(accountcode)={$code})\n"
             . " same => n,Set(CDR(userfield)={$code})\n"
             . " same => n,Set(ASTERA_CALLER_NUM=\${FILTER(0-9,\${CALLERID(num)})})\n"
             . " same => n,Set(ASTERA_CRM_NUM=\${IF(\$[\${LEN(\${ASTERA_CALLER_NUM})}=12 & \"\${ASTERA_CALLER_NUM:0:2}\"=\"90\"]?\${ASTERA_CALLER_NUM:2}:\${ASTERA_CALLER_NUM})})\n"

@@ -4,6 +4,44 @@ $exts = scoped('extensions');
 $strategies = ring_strategies();
 $showDept = current_dept_id() === null;
 $departmentIndex = [];
+$notificationEmails = [];
+$notificationTemplates = [];
+$defaultNotificationFromName = 'Astera Santral ve Callcenter';
+$defaultNotificationSubject = '[Astera Santral ve Callcenter] Kaçan çağrı - {kuyruk}';
+$defaultNotificationBody = "Astera Santral ve Callcenter\n\nKaçan çağrı bildirimi\n\n"
+    . "Kuyruk Adı: {kuyruk}\nNumara: {numara}\nTarih / Saat: {tarih} {saat}\n"
+    . "Kaçtığı Sıra: {sira}\nBekleme Süresi: {bekleme} sn\nSantral: {santral}";
+try {
+    foreach (callcenter_rows(
+        'SELECT dept_id,queue_id,email FROM callcenter_queue_notification_recipients '
+        . 'WHERE active ORDER BY dept_id,queue_id,email'
+    ) as $recipient) {
+        $notificationEmails[(string) $recipient['dept_id']][(string) $recipient['queue_id']][] =
+            (string) $recipient['email'];
+    }
+    foreach (callcenter_rows(
+        'SELECT dept_id,queue_id,missed_call_from_name,missed_call_subject_template,'
+        . 'missed_call_body_template FROM callcenter_queue_settings'
+    ) as $template) {
+        $notificationTemplates[(string) $template['dept_id']][(string) $template['queue_id']] = $template;
+    }
+} catch (Throwable) {
+    $notificationEmails = [];
+    $notificationTemplates = [];
+}
+foreach ($rows as &$queueRow) {
+    $rowDept = (string) ($queueRow['dept'] ?? '');
+    $rowId = (string) ($queueRow['id'] ?? '');
+    $queueRow['missed_call_emails'] = $notificationEmails[$rowDept][$rowId] ?? [];
+    $template = $notificationTemplates[$rowDept][$rowId] ?? [];
+    $queueRow['missed_call_from_name'] =
+        (string) ($template['missed_call_from_name'] ?? $defaultNotificationFromName);
+    $queueRow['missed_call_subject_template'] =
+        (string) ($template['missed_call_subject_template'] ?? $defaultNotificationSubject);
+    $queueRow['missed_call_body_template'] =
+        (string) ($template['missed_call_body_template'] ?? $defaultNotificationBody);
+}
+unset($queueRow);
 foreach (departments() as $department) {
     $departmentIndex[(string) ($department['id'] ?? '')] = $department;
 }
@@ -24,6 +62,7 @@ foreach (departments() as $department) {
                 <th>Üyeler</th>
                 <th>Bekleme</th>
                 <th>Anons</th>
+                <th>Kaçan çağrı bildirimi</th>
                 <th></th>
             </tr>
         </thead>
@@ -70,6 +109,14 @@ foreach (departments() as $department) {
                     <span class="pill <?= !empty($row['announce_position']) ? 'ok' : 'dim' ?>">Sıra <?= !empty($row['announce_position']) ? 'açık' : 'kapalı' ?></span>
                     <?php if (!empty($row['periodic_announce'])): ?><br><small><?= e($row['periodic_announce']) ?></small><?php endif; ?>
                 </td>
+                <td>
+                    <?php if (!empty($row['missed_call_emails'])): ?>
+                        <span class="pill ok"><?= count($row['missed_call_emails']) ?> alıcı</span>
+                        <br><small><?= e(implode(', ', $row['missed_call_emails'])) ?></small>
+                    <?php else: ?>
+                        <span class="pill dim">Kapalı</span>
+                    <?php endif; ?>
+                </td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-queue='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
                     <button class="btn sm" type="button" data-copy-queue='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Çoğalt</button>
@@ -78,7 +125,7 @@ foreach (departments() as $department) {
             </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-            <tr><td colspan="<?= $showDept ? 9 : 8 ?>" class="muted">Kuyruk yok. “Kuyruk ekle” ile ilk kuyruğu oluşturabilirsiniz.</td></tr>
+            <tr><td colspan="<?= $showDept ? 10 : 9 ?>" class="muted">Kuyruk yok. “Kuyruk ekle” ile ilk kuyruğu oluşturabilirsiniz.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>

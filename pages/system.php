@@ -1,8 +1,13 @@
 <?php
 require_once dirname(__DIR__) . '/includes/alarms.php';
 require_once dirname(__DIR__) . '/includes/system_updates.php';
+require_once dirname(__DIR__) . '/includes/system_power.php';
 
 $renderAlarmPage = !empty($renderAlarmPage);
+$systemPowerFlash = !$renderAlarmPage ? (array) ($_SESSION['system_power_flash'] ?? []) : [];
+if (!$renderAlarmPage) {
+    unset($_SESSION['system_power_flash']);
+}
 $cli = $renderAlarmPage ? '' : pbx_cli('core show version');
 $uptime = $renderAlarmPage ? '' : pbx_cli('core show uptime');
 $transports = $renderAlarmPage ? '' : pbx_cli('pjsip show transports');
@@ -51,7 +56,9 @@ if ($renderAlarmPage && $alarmDeptId !== null && dept_by_id($alarmDeptId) !== nu
         ['dept' => $alarmDeptId]
     );
     $alarmEvents = callcenter_rows(
-        'SELECT event_type,severity,summary,occurred_at,alarm_key FROM callcenter_alarm_events '
+        "SELECT event_type,severity,summary,occurred_at,alarm_key,"
+        . "to_char(occurred_at AT TIME ZONE 'Europe/Istanbul','DD.MM.YYYY HH24:MI:SS') AS occurred_at_local "
+        . 'FROM callcenter_alarm_events '
         . 'WHERE dept_id=:dept ORDER BY occurred_at DESC,event_id DESC LIMIT 50',
         ['dept' => $alarmDeptId]
     );
@@ -86,10 +93,50 @@ $alarmBool = static fn(mixed $value): bool =>
         <p class="muted">Aboneler kendi firmasının <code>from-&lt;kod&gt;</code> bağlamındadır; başka firmayı include etmez.</p>
     </article>
 </div>
+<article class="card" id="system-power">
+    <h2>Sistem Gücü</h2>
+    <p class="muted">Sunucuyu kontrollü olarak yeniden başlatır veya kapatır. İşlem başladığında aktif görüşmeler kesilir ve panel bağlantısı kapanır.</p>
+    <?php if ($systemPowerFlash): ?>
+        <p class="alert <?= !empty($systemPowerFlash['error']) ? 'bad' : 'good' ?>"><?= e((string) ($systemPowerFlash['message'] ?? '')) ?></p>
+    <?php endif; ?>
+    <div class="grid-2">
+        <form method="post" action="system_power.php" data-system-power-form data-confirmation="YENIDEN BASLAT">
+            <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+            <input type="hidden" name="action" value="reboot">
+            <input type="hidden" name="confirmation" value="">
+            <h3>Yeniden Başlat</h3>
+            <p class="muted">İşletim sistemini güvenli biçimde yeniden başlatır. Panel ve telefon kayıtları sunucu açılana kadar erişilemez.</p>
+            <button class="btn danger" type="submit">Sunucuyu Yeniden Başlat</button>
+        </form>
+        <form method="post" action="system_power.php" data-system-power-form data-confirmation="KAPAT">
+            <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+            <input type="hidden" name="action" value="poweroff">
+            <input type="hidden" name="confirmation" value="">
+            <h3>Sunucuyu Kapat</h3>
+            <p class="muted">Sunucuyu tamamen kapatır. Yeniden açmak için fiziksel veya sanallaştırma platformu erişimi gerekir.</p>
+            <button class="btn danger" type="submit">Sunucuyu Kapat</button>
+        </form>
+    </div>
+</article>
 <article class="card">
     <h2>CLI</h2>
     <pre class="log"><?= e(trim($cli . "\n" . $uptime . "\n" . $transports)) ?></pre>
 </article>
+<script>
+document.querySelectorAll('[data-system-power-form]').forEach(form => {
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        const confirmation = form.dataset.confirmation;
+        const entered = prompt(`Aktif görüşmeler kesilecek. Devam etmek için ${confirmation} yazın:`);
+        if (entered !== confirmation) {
+            if (entered !== null) alert('Onay metni eşleşmedi; işlem iptal edildi.');
+            return;
+        }
+        form.elements.confirmation.value = confirmation;
+        form.submit();
+    });
+});
+</script>
 <?php endif; ?>
 
 <?php if ($renderAlarmPage): ?>
@@ -234,7 +281,7 @@ $alarmBool = static fn(mixed $value): bool =>
 <article class="card">
     <h2>Son 50 Alarm Olayı</h2>
     <table class="alarm-table"><thead><tr><th>Zaman</th><th>Alarm</th><th>Olay</th><th>Seviye</th><th>Açıklama</th></tr></thead><tbody>
-    <?php foreach ($alarmEvents as $event): ?><tr><td><?= e(date('d.m.Y H:i:s', strtotime((string) $event['occurred_at']))) ?></td><td><?= e($alarmDefinitions[(string) $event['alarm_key']][1] ?? (string) $event['alarm_key']) ?></td><td><?= e((string) $event['event_type']) ?></td><td><span class="pill <?= $event['severity'] === 'critical' ? 'bad' : 'dim' ?>"><?= e((string) $event['severity']) ?></span></td><td><?= e((string) $event['summary']) ?></td></tr><?php endforeach; ?>
+    <?php foreach ($alarmEvents as $event): ?><tr><td><?= e((string) $event['occurred_at_local']) ?></td><td><?= e($alarmDefinitions[(string) $event['alarm_key']][1] ?? (string) $event['alarm_key']) ?></td><td><?= e((string) $event['event_type']) ?></td><td><span class="pill <?= $event['severity'] === 'critical' ? 'bad' : 'dim' ?>"><?= e((string) $event['severity']) ?></span></td><td><?= e((string) $event['summary']) ?></td></tr><?php endforeach; ?>
     <?php if (!$alarmEvents): ?><tr><td colspan="5" class="muted">Henüz alarm olayı yok.</td></tr><?php endif; ?>
     </tbody></table>
 </article>

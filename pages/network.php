@@ -55,7 +55,7 @@ foreach ($liveRoutes as $route) {
     <div class="network-intro-status">
         <span>Algılanan Ethernet kartı</span>
         <strong><?= count($interfaces) ?></strong>
-        <small>Panel adresi: <?= e(PBX_HOST) ?></small>
+        <small>Panel adresi: <?= e(network_live_primary_ipv4()) ?></small>
         <button class="btn sm" type="button" id="networkRefresh">Durumu yenile</button>
     </div>
 </article>
@@ -64,6 +64,7 @@ foreach ($liveRoutes as $route) {
 <?php foreach ($interfaces as $interfaceIndex => $live):
     $name = (string) $live['interface_name'];
     $saved = $savedByInterface[$name] ?? [];
+    $displayName = trim((string) ($saved['display_name'] ?? ''));
     $method = (string) ($saved['method'] ?? $live['method'] ?? 'manual');
     $pendingConfirmation = !empty($saved['rollback_unit']) && empty($saved['confirmed']);
     $savedIpv4 = (string) ($saved['ipv4_cidr'] ?? '');
@@ -75,12 +76,15 @@ foreach ($liveRoutes as $route) {
             <div class="network-interface-title">
                 <span class="security-kicker">ETHERNET <?= $interfaceIndex + 1 ?></span>
                 <div>
-                    <h2><?= e($name) ?></h2>
+                    <h2><?= e($displayName !== '' ? $displayName : $name) ?></h2>
                     <span class="pill <?= $connected ? 'ok' : 'dim' ?>">
                         <?= $connected ? 'Bağlı' : 'Bağlı değil' ?>
                     </span>
                 </div>
-                <p><?= e((string) ($live['connection_name'] ?: 'NetworkManager profili bulunamadı')) ?></p>
+                <p>
+                    <?= e($name) ?> ·
+                    <?= e((string) ($live['connection_name'] ?: 'NetworkManager profili bulunamadı')) ?>
+                </p>
             </div>
             <div class="network-live-grid">
                 <div>
@@ -100,11 +104,15 @@ foreach ($liveRoutes as $route) {
                     <div class="security-rule-heading">
                         <span class="security-step">1</span>
                         <div>
-                            <h2>Firma ve bağlantı tipi</h2>
-                            <p>Bu fiziksel portun ait olduğu firmayı ve IP alma yöntemini seçin.</p>
+                            <h2>Ad, firma ve bağlantı tipi</h2>
+                            <p>Bu fiziksel porta anlaşılır bir ad verin; firmasını ve IP alma yöntemini seçin.</p>
                         </div>
                     </div>
                     <div class="network-step-fields">
+                        <label>Ethernet adı
+                            <input name="display_name" maxlength="80" value="<?= e($displayName) ?>"
+                                placeholder="Örn. Yerel Ağ veya Operatör Hattı">
+                        </label>
                         <label>Firma
                             <select name="dept" required>
                                 <option value="">Firma seçin</option>
@@ -202,11 +210,12 @@ foreach ($liveRoutes as $route) {
                         <option value="">Tüm kartlar</option>
                         <?php foreach ($interfaces as $interface):
                             $filterInterface = (string) $interface['interface_name'];
+                            $filterDisplayName = trim((string) ($savedByInterface[$filterInterface]['display_name'] ?? ''));
                             $filterLiveIp = (string) ($interface['ipv4_cidr'] ?? '');
                             $filterSavedIp = (string) ($savedByInterface[$filterInterface]['ipv4_cidr'] ?? '');
                             $filterIp = $filterLiveIp !== '' ? $filterLiveIp : $filterSavedIp;
                         ?>
-                            <option value="<?= e($filterInterface) ?>"><?= e($filterInterface) ?> · <?= e($filterIp !== '' ? $filterIp : 'IP yok') ?></option>
+                            <option value="<?= e($filterInterface) ?>"><?= e($filterDisplayName !== '' ? $filterDisplayName . ' (' . $filterInterface . ')' : $filterInterface) ?> · <?= e($filterIp !== '' ? $filterIp : 'IP yok') ?></option>
                         <?php endforeach; ?>
                     </select>
                 </label>
@@ -292,6 +301,7 @@ foreach ($liveRoutes as $route) {
                 <select name="interface_name" required>
                     <?php foreach ($interfaces as $interface):
                         $interfaceName = (string) $interface['interface_name'];
+                        $interfaceDisplayName = trim((string) ($savedByInterface[$interfaceName]['display_name'] ?? ''));
                         $liveIpv4 = (string) ($interface['ipv4_cidr'] ?? '');
                         $configuredIpv4 = (string) ($savedByInterface[$interfaceName]['ipv4_cidr'] ?? '');
                         $interfaceDept = (string) ($savedByInterface[$interfaceName]['dept_id'] ?? '');
@@ -299,7 +309,7 @@ foreach ($liveRoutes as $route) {
                             ? $liveIpv4 . ' (aktif)'
                             : ($configuredIpv4 !== '' ? $configuredIpv4 . ' (kayıtlı, aktif değil)' : 'IP yok');
                     ?>
-                        <option value="<?= e($interfaceName) ?>" data-dept="<?= e($interfaceDept) ?>"><?= e($interfaceName) ?> · <?= e($ipLabel) ?></option>
+                        <option value="<?= e($interfaceName) ?>" data-dept="<?= e($interfaceDept) ?>"><?= e($interfaceDisplayName !== '' ? $interfaceDisplayName . ' (' . $interfaceName . ')' : $interfaceName) ?> · <?= e($ipLabel) ?></option>
                     <?php endforeach; ?>
                 </select>
             </label>

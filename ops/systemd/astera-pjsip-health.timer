@@ -1,0 +1,12 @@
+[Unit]
+Description=Astera PJSIP sağlığını her dakika denetle
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=astera-pjsip-health.service
+
+[Install]
+WantedBy=timers.target

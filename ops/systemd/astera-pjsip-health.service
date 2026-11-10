@@ -1,0 +1,9 @@
+[Unit]
+Description=Astera PJSIP trunk ve UDP sağlık denetimi
+After=network-online.target asterisk.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/astera-pjsip-health
+Nice=10

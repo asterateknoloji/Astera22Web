@@ -10,6 +10,13 @@ $priSpans = array_map(static function (array $span): array {
     static fn(array $span): bool => !empty($span['enabled'])
 )));
 $trunks = array_merge($trunks, $priSpans);
+$trunkNames = [];
+foreach ($trunks as $trunk) {
+    $trunkId = (string) ($trunk['id'] ?? '');
+    if ($trunkId !== '') {
+        $trunkNames[$trunkId] = (string) ($trunk['name'] ?? $trunkId);
+    }
+}
 $showDept = current_dept_id() === null;
 $routeCounts = [];
 $routePositions = [];
@@ -31,7 +38,7 @@ foreach ($rows as $row) {
                 <th>Öncelik</th>
                 <th>Ad</th>
                 <th>Arama kalıpları</th>
-                <th>Trunk sırası</th>
+                <th>Hat isimleri</th>
                 <th>Dağıtım</th>
                 <th></th>
             </tr>
@@ -53,6 +60,10 @@ foreach ($rows as $row) {
                 'strval',
                 is_array($row['trunks'] ?? null) ? $row['trunks'] : [(string) ($row['trunk'] ?? '')]
             )));
+            $routeTrunkNames = array_map(
+                static fn(string $trunkId): string => $trunkNames[$trunkId] ?? $trunkId,
+                $routeTrunks
+            );
             ?>
             <tr>
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
@@ -77,7 +88,7 @@ foreach ($rows as $row) {
                         </div>
                     <?php endforeach; ?>
                 </td>
-                <td><code><?= e(implode(' → ', $routeTrunks)) ?></code></td>
+                <td><?= e(implode(' → ', $routeTrunkNames)) ?></td>
                 <td><?= !empty($row['equal_distribution']) ? 'Eşit' : 'Sıralı' ?></td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-out='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>

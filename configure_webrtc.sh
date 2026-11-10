@@ -135,9 +135,18 @@ import sys
 
 path = Path(sys.argv[1])
 body = path.read_text(encoding="utf-8")
-old = """            if (!in_array('opus', $codecs, true)) {
+legacy = """            if (!in_array('opus', $codecs, true)) {
                 array_unshift($codecs, 'opus');
             }
+"""
+current = """            // Stock/custom prompts are signed-linear audio. Some Asterisk
+            // installations can pass Opus through but cannot transcode prompts
+            // to Opus, so keep a narrow-band prompt codec ahead of Opus.
+            $codecs = array_values(array_filter(
+                $codecs,
+                static fn($codec): bool => strtolower((string) $codec) !== 'opus'
+            ));
+            $codecs[] = 'opus';
 """
 new = """            // ASTERA: codec_opus translator is unavailable on this PBX.
             $codecs = array_values(array_filter(
@@ -149,9 +158,10 @@ new = """            // ASTERA: codec_opus translator is unavailable on this PBX
             }
 """
 if "codec_opus translator is unavailable" not in body:
-    if old not in body:
+    source = current if current in body else legacy if legacy in body else None
+    if source is None:
         raise SystemExit("generator.php Opus blogu beklenen bicimde degil")
-    body = body.replace(old, new, 1)
+    body = body.replace(source, new, 1)
     path.write_text(body, encoding="utf-8")
 PY
         chown astera-panel:www-data "$APP_DIR/includes/generator.php"

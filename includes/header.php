@@ -63,10 +63,12 @@
             </div>
         </details>
         <details class="nav-group" name="rail-menu"
-            <?= in_array(current_page(), ['cdr', 'queue_log', 'reports', 'recordings'], true) ? 'open' : '' ?>>
+            <?= in_array(current_page(), ['cdr', 'queue_log', 'queue_missed_calls', 'reports', 'recordings'], true) ? 'open' : '' ?>>
             <summary>Raporlar</summary>
             <div class="nav-group-items">
                 <a class="<?= nav_active('cdr') ?>" href="index.php?p=cdr">Çağrı listesi</a>
+                <a class="<?= nav_active('reports') ?>" href="index.php?p=reports">Trunk raporu</a>
+                <a class="<?= nav_active('queue_missed_calls') ?>" href="index.php?p=queue_missed_calls">Kuyruk kaçan çağrılar</a>
                 <a class="<?= nav_active('queue_log') ?>" href="index.php?p=queue_log">Kuyruk olayları</a>
             </div>
         </details>
@@ -79,12 +81,13 @@
         </details>
         <?php if (is_super()): ?>
             <details class="nav-group" name="rail-menu"
-                <?= in_array(current_page(), ['contexts', 'logs', 'security', 'ssl', 'network', 'ntp', 'ami', 'system', 'alarmlar', 'integrations', 'backup'], true) ? 'open' : '' ?>>
+                <?= in_array(current_page(), ['contexts', 'logs', 'security', 'fail2ban', 'ssl', 'network', 'ntp', 'ami', 'system', 'alarmlar', 'integrations', 'backup'], true) ? 'open' : '' ?>>
                 <summary>Sistem</summary>
                 <div class="nav-group-items">
                     <a class="<?= nav_active('contexts') ?>" href="index.php?p=contexts">Dialplan context’leri</a>
                     <a class="<?= nav_active('logs') ?>" href="index.php?p=logs">Log</a>
                     <a class="<?= nav_active('security') ?>" href="index.php?p=security">Güvenlik / IP İzinleri</a>
+                    <a class="<?= nav_active('fail2ban') ?>" href="index.php?p=fail2ban">Fail2ban</a>
                     <a class="<?= nav_active('ssl') ?>" href="index.php?p=ssl">SSL Sertifikası</a>
                     <a class="<?= nav_active('network') ?>" href="index.php?p=network">Ethernet Ayarları</a>
                     <a class="<?= nav_active('ntp') ?>" href="index.php?p=ntp">NTP Ayarları</a>
@@ -92,17 +95,25 @@
                     <a class="<?= nav_active('alarmlar') ?>" href="index.php?p=alarmlar">Alarmlar</a>
                     <a class="<?= nav_active('integrations') ?>" href="index.php?p=integrations">Entegrasyonlar</a>
                     <a class="<?= nav_active('backup') ?>" href="index.php?p=backup">Backup</a>
-                    <a class="<?= nav_active('system') ?>" href="index.php?p=system">Sistem</a>
+                    <a class="<?= nav_active('system') ?>" href="index.php?p=system">Sistem / Güç</a>
                 </div>
             </details>
         <?php endif; ?>
     </nav>
     <div class="rail-foot">
-        <div class="rail-system-row">
+        <div class="rail-system-title">
             <span class="dot" id="liveDot"></span>
-            <span>Santral IP</span>
-            <strong id="liveHost"><?= e(PBX_HOST) ?></strong>
+            <span>Santral IP’leri</span>
         </div>
+        <?php foreach (network_sidebar_addresses() as $interfaceAddress): ?>
+            <div class="rail-interface-row">
+                <?php $interfaceDisplayName = trim((string) ($interfaceAddress['display_name'] ?? '')); ?>
+                <span title="<?= e((string) $interfaceAddress['interface']) ?>">
+                    <?= e($interfaceDisplayName !== '' ? $interfaceDisplayName : (string) $interfaceAddress['interface']) ?>
+                </span>
+                <strong><?= e((string) $interfaceAddress['ip']) ?></strong>
+            </div>
+        <?php endforeach; ?>
         <div class="rail-system-row">
             <span>WAN IP</span>
             <strong><?= e(pbx_public_wan_ip() ?: 'Alınamadı') ?></strong>
@@ -146,12 +157,14 @@
                 'sounds' => 'Sistem sesleri ve MOH',
                 'blacklist' => 'Kara liste',
                 'recordings' => 'Ses kayıtları',
-                'reports' => 'Raporlama',
+                'reports' => 'Trunk raporu',
                 'cdr' => 'Çağrı listesi',
                 'queue_log' => 'Kuyruk olayları',
+                'queue_missed_calls' => 'Kuyruk kaçan çağrılar',
                 'contexts' => 'Dialplan context’leri',
                 'logs' => 'Asterisk log',
                 'security' => 'Güvenlik / IP izinleri',
+                'fail2ban' => 'Fail2ban',
                 'ssl' => 'SSL sertifikası',
                 'network' => 'Ethernet ayarları',
                 'ami' => 'AMI kullanıcıları',

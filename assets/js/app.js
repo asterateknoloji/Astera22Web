@@ -210,7 +210,24 @@ const Astera = {
                 if (extensionBody) {
                     const registered = new Set((s.registered || []).map(String));
                     const collator = new Intl.Collator('tr', { numeric: true, sensitivity: 'base' });
-                    [...extensionBody.querySelectorAll('[data-dashboard-extension]')]
+                    const extensionRows = [...extensionBody.querySelectorAll('[data-dashboard-extension]')];
+                    let registeredCount = 0;
+                    let unregisteredCount = 0;
+                    extensionRows.forEach((row) => {
+                        if (row.dataset.technology !== 'pjsip') {
+                            row.dataset.registration = 'other';
+                            return;
+                        }
+                        const online = registered.has(row.dataset.sip || '');
+                        row.dataset.registration = online ? 'registered' : 'unregistered';
+                        registeredCount += online ? 1 : 0;
+                        unregisteredCount += online ? 0 : 1;
+                    });
+                    const registeredCounter = document.getElementById('dashboardRegisteredCount');
+                    const unregisteredCounter = document.getElementById('dashboardUnregisteredCount');
+                    if (registeredCounter) registeredCounter.textContent = registeredCount;
+                    if (unregisteredCounter) unregisteredCounter.textContent = unregisteredCount;
+                    extensionRows
                         .sort((left, right) => {
                             const leftOnline = left.dataset.technology === 'pjsip'
                                 && registered.has(left.dataset.sip || '');
@@ -220,6 +237,7 @@ const Astera = {
                             return collator.compare(left.dataset.exten || '', right.dataset.exten || '');
                         })
                         .forEach((row) => extensionBody.appendChild(row));
+                    this.applyDashboardExtensionFilter();
                 }
                 this._lastStatus = s;
                 if (document.getElementById('regCount')) this.renderDashboard(s);
@@ -239,11 +257,45 @@ const Astera = {
     },
 
     pollDashboard() {
+        const filterBox = document.getElementById('dashboardExtensionFilters');
+        if (filterBox && filterBox.dataset.ready !== '1') {
+            filterBox.dataset.ready = '1';
+            filterBox.querySelectorAll('[data-extension-filter]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    filterBox.dataset.activeFilter = button.dataset.extensionFilter || 'all';
+                    filterBox.querySelectorAll('[data-extension-filter]').forEach((candidate) =>
+                        candidate.classList.toggle('active', candidate === button)
+                    );
+                    this.applyDashboardExtensionFilter();
+                });
+            });
+            document.getElementById('dashboardExtensionSearch')?.addEventListener(
+                'input',
+                () => this.applyDashboardExtensionFilter()
+            );
+        }
         this.refreshStatus();
     },
 
+    applyDashboardExtensionFilter() {
+        const filterBox = document.getElementById('dashboardExtensionFilters');
+        const extensionBody = document.getElementById('dashboardExtensionBody');
+        if (!filterBox || !extensionBody) return;
+        const activeFilter = filterBox.dataset.activeFilter || 'all';
+        const search = (document.getElementById('dashboardExtensionSearch')?.value || '')
+            .trim().toLocaleLowerCase('tr');
+        extensionBody.querySelectorAll('[data-dashboard-extension]').forEach((row) => {
+            const matchesStatus = activeFilter === 'all'
+                || row.dataset.registration === activeFilter;
+            const matchesSearch = search === ''
+                || (row.dataset.search || '').toLocaleLowerCase('tr').includes(search);
+            row.hidden = !(matchesStatus && matchesSearch);
+        });
+    },
+
     renderDashboard(s) {
-        document.getElementById('regCount').textContent = (s.registered || []).length;
+        const registeredCount = (s.registered || []).length;
+        document.getElementById('regCount').textContent = registeredCount;
         document.getElementById('callCount').textContent = s.active_calls ?? 0;
         document.getElementById('uptimeBox').textContent = s.uptime || '—';
         const escapeStatus = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -260,12 +312,15 @@ const Astera = {
             return (leftMeta?.index ?? Number.MAX_SAFE_INTEGER)
                 - (rightMeta?.index ?? Number.MAX_SAFE_INTEGER);
         });
-        document.getElementById('regList').innerHTML = regs.length
-            ? regs.map((sip) => {
-                const extension = extensionBySip.get(String(sip))?.exten || sip;
-                return `<div class="row"><code>${escapeStatus(extension)}</code><span class="pill ok">online</span></div>`;
-            }).join('')
-            : '<div class="muted">Kayıtlı telefon yok.</div>';
+        const regList = document.getElementById('regList');
+        if (regList) {
+            regList.innerHTML = regs.length
+                ? regs.map((sip) => {
+                    const extension = extensionBySip.get(String(sip))?.exten || sip;
+                    return `<div class="row"><code>${escapeStatus(extension)}</code><span class="pill ok">online</span></div>`;
+                }).join('')
+                : '<div class="muted">Kayıtlı telefon yok.</div>';
+        }
         const ch = s.channels || [];
         document.getElementById('chanCount').textContent = ch.length;
         document.getElementById('chanList').innerHTML = ch.length
@@ -276,7 +331,8 @@ const Astera = {
     renderDashboardUnavailable() {
         document.getElementById('regCount').textContent = '—';
         document.getElementById('callCount').textContent = '—';
-        document.getElementById('regList').innerHTML = '<div class="muted">Santral durumu alınamadı.</div>';
+        const regList = document.getElementById('regList');
+        if (regList) regList.innerHTML = '<div class="muted">Santral durumu alınamadı.</div>';
         document.getElementById('chanCount').textContent = '—';
         document.getElementById('chanList').innerHTML = '<div class="muted">Santral durumu alınamadı.</div>';
     },
@@ -287,7 +343,7 @@ const Astera = {
         ).join('');
     },
 
-    formSubmit(form, action, extra = {}, { skipUnchanged = false } = {}) {
+    formSubmit(form, action, extra = {}, { skipUnchanged = true } = {}) {
         const snapshot = () => JSON.stringify(
             [...new FormData(form).entries()]
                 .map(([key, value]) => [key, String(value)])
@@ -549,6 +605,10 @@ const Astera = {
                     </label>
                     <label>Çalma süresi (sn)<input name="ringtime" type="number" min="8" value="${row.ringtime || 30}"></label>
                     <label>Giden CID<input name="cid_num" value="${row.cid_num || ''}" placeholder="firma CID yoksa"></label>
+                    <label class="extension-wide">Çağrı toplama grupları
+                        <input name="pickup_groups" required value="${escape((Array.isArray(row.pickup_groups) && row.pickup_groups.length ? row.pickup_groups : [1]).join(','))}" placeholder="Örn. 3,4,5">
+                        <small class="muted">Abone birden fazla gruba üye olabilir. 1-63 arasındaki grup numaralarını virgülle ayırın.</small>
+                    </label>
                     <div class="extension-section-title">Çağrı özellikleri</div>
                     <fieldset class="fieldset extension-wide extension-outbound-permissions">
                         <legend>Giden Aramalar</legend>
@@ -740,7 +800,7 @@ const Astera = {
                 <form id="extensionImportForm">
                     ${this.deptField()}
                     <label>CSV dosyası<input name="file" type="file" accept=".csv,text/csv" required></label>
-                    <p class="muted tiny">Zorunlu sütun: <code>dahili</code>. <code>abone_turu</code>: PJSIP, DAHDI veya CUSTOM. PJSIP için en az 8 karakter parola gerekir. Cevaplanmazsa/meşgulse hedefi için tür ve hedef sütunlarını kullanabilirsiniz; örnek: <code>ivr;8502</code>.</p>
+                    <p class="muted tiny">Zorunlu sütun: <code>dahili</code>. <code>abone_turu</code>: PJSIP, DAHDI veya CUSTOM. Çağrı toplama gruplarını <code>1,3,5</code> biçiminde yazabilirsiniz. PJSIP için en az 8 karakter parola gerekir.</p>
                     <div id="extensionImportConflicts"></div>
                     <div class="modal-actions">
                         <button class="btn" type="button" id="downloadExtensionTemplate">Örnek CSV</button>
@@ -751,10 +811,10 @@ const Astera = {
             `, { closeOnBackdrop: false });
             document.getElementById('c').onclick = () => this.closeModal();
             document.getElementById('downloadExtensionTemplate').onclick = () => {
-                const csv = '\uFEFFdahili;ad;abone_turu;sip_kullanici;auth_kullanici;parola;dahdi_grup;dahdi_hedef;custom_hedef;dis_arama;telefon;kayit;kodekler;cevaplanmazsa_mesgulse_tur;cevaplanmazsa_mesgulse_hedef\r\n'
-                    + '101;Muhasebe;PJSIP;101;;GucluParola101;;;;evet;softphone;evet;alaw,ulaw;ivr;8502\r\n'
-                    + '201;PRI Oda;DAHDI;;;;;g3/201;;hayir;dahdi;hayir;;ivr;8502\r\n'
-                    + '301;Özel Kanal;CUSTOM;;;;;;local/301@from-alcatel;hayir;custom;hayir;;ivr;8502\r\n';
+                const csv = '\uFEFFdahili;ad;abone_turu;sip_kullanici;auth_kullanici;parola;dahdi_grup;dahdi_hedef;custom_hedef;dis_arama;telefon;kayit;kodekler;cagri_toplama_gruplari;cevaplanmazsa_mesgulse_tur;cevaplanmazsa_mesgulse_hedef\r\n'
+                    + '101;Muhasebe;PJSIP;101;;GucluParola101;;;;evet;softphone;evet;alaw,ulaw;1,3,5;ivr;8502\r\n'
+                    + '201;PRI Oda;DAHDI;;;;;g3/201;;hayir;dahdi;hayir;;1;ivr;8502\r\n'
+                    + '301;Özel Kanal;CUSTOM;;;;;;local/301@from-alcatel;hayir;custom;hayir;;1;ivr;8502\r\n';
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
                 link.download = 'abone-import-ornek.csv';
@@ -847,7 +907,7 @@ const Astera = {
                 'dahdi_grup', 'dahdi_hedef', 'custom_hedef',
                 'telefon', 'crm', 'dis_arama', 'giden_arama_kurallari',
                 'kayit', 'kayit_formati', 'mesaj_kutusu',
-                'calma_suresi', 'follow_me', 'kodekler',
+                'calma_suresi', 'follow_me', 'kodekler', 'cagri_toplama_gruplari',
                 'cevaplanmazsa_mesgulse_tur', 'cevaplanmazsa_mesgulse_hedef'
             ];
             const lines = exportRows.map((row) => {
@@ -876,6 +936,7 @@ const Astera = {
                     String(row.record_format || 'wav').toUpperCase(),
                     row.vm_enabled ? 'evet' : 'hayir', row.ringtime ?? 30,
                     row.followme || '', Array.isArray(row.codecs) ? row.codecs.join(',') : '',
+                    (Array.isArray(row.pickup_groups) && row.pickup_groups.length ? row.pickup_groups : [1]).join(','),
                     row.fallback_type || 'hangup', row.fallback_export_dest || ''
                 ].map(csvCell).join(';');
             });
@@ -1065,6 +1126,45 @@ const Astera = {
         const editSelected = document.getElementById('copyExtFeatures');
         const selectedCount = document.getElementById('extSelectedCount');
         const extensionRows = [...document.querySelectorAll('[data-ext-row]')];
+        const extensionSortButtons = [...document.querySelectorAll('[data-extension-sort]')];
+        const extensionCollator = new Intl.Collator('tr-TR', {
+            numeric: true,
+            sensitivity: 'base',
+        });
+        let extensionSort = { key: '', direction: 1 };
+        const sortExtensionRows = (key) => {
+            extensionSort = {
+                key,
+                direction: extensionSort.key === key ? extensionSort.direction * -1 : 1,
+            };
+            extensionRows.sort((left, right) => {
+                const result = extensionCollator.compare(
+                    left.dataset[key] || '',
+                    right.dataset[key] || ''
+                );
+                if (result !== 0) return result * extensionSort.direction;
+                return extensionCollator.compare(
+                    left.dataset.exten || '',
+                    right.dataset.exten || ''
+                );
+            });
+            const body = extensionRows[0]?.parentElement;
+            if (body) extensionRows.forEach((row) => body.appendChild(row));
+            extensionSortButtons.forEach((button) => {
+                const active = button.dataset.extensionSort === key;
+                button.classList.toggle('active', active);
+                button.querySelector('span').textContent = active
+                    ? (extensionSort.direction === 1 ? '↑' : '↓')
+                    : '↕';
+                button.closest('th')?.setAttribute(
+                    'aria-sort',
+                    active ? (extensionSort.direction === 1 ? 'ascending' : 'descending') : 'none'
+                );
+            });
+        };
+        extensionSortButtons.forEach((button) => {
+            button.onclick = () => sortExtensionRows(button.dataset.extensionSort);
+        });
         const updateSelection = () => {
             const visibleChecks = extensionRows
                 .filter((row) => !row.hidden)
@@ -1234,6 +1334,10 @@ const Astera = {
                     </label>
                     <p class="muted">Telekom/SIP operatörü için “Gelen çağrı kuralları”, Alcatel veya başka bir PBX doğrudan dahili gönderiyorsa “Dahilileri doğrudan ara” seçin.</p>
                     <label>Sunucu / IP<input name="host" required value="${row.host || ''}"></label>
+                    <label>Gelen SIP kaynak IP’leri
+                        <input name="identify_matches" value="${(row.identify_matches || []).join(', ')}" placeholder="Örn. 10.0.0.2, 85.111.24.0/24">
+                    </label>
+                    <p class="muted">Operatör çağrıları kayıt sunucusundan farklı bir IP üzerinden gönderiyorsa yazın. Birden fazla IP/CIDR virgülle ayrılabilir.</p>
                     <label>Port<input name="port" type="number" value="${row.port || 5060}"></label>
                     <label>Kullanıcı<input name="username" value="${row.username || ''}"></label>
                     <label>Parola<input name="password" value="${row.password || ''}"></label>
@@ -1243,7 +1347,7 @@ const Astera = {
 
                     <h4>Giden Arayan Kimliği</h4>
                     <label>Giden Arayan Numarası
-                        <input name="outbound_caller_id" value="${row.outbound_caller_id || ''}" placeholder="Örn. 08505822278">
+                        <input name="outbound_caller_id" value="${row.outbound_caller_id || ''}" placeholder="Örn. 02122130686">
                     </label>
                     <label>CID davranışı
                         <select name="cid_option">
@@ -1325,12 +1429,22 @@ const Astera = {
             }, true);
         });
         document.querySelectorAll('[data-toggle-trunk]').forEach((b) => b.onclick = async () => {
+            const originalText = b.textContent;
+            const enabling = originalText.includes('Etkinleştir');
             b.disabled = true;
+            b.textContent = enabling
+                ? 'Etkinleştiriliyor… Lütfen bekleyiniz'
+                : 'Kapatılıyor… Lütfen bekleyiniz';
+            this.toast(enabling
+                ? 'Trunk etkinleştiriliyor, lütfen bekleyiniz…'
+                : 'Trunk kapatılıyor, lütfen bekleyiniz…');
             try {
-                await this.post('trunk_toggle', { id: b.dataset.toggleTrunk });
-                location.reload();
+                const result = await this.post('trunk_toggle', { id: b.dataset.toggleTrunk });
+                this.toast(result.message || (result.enabled ? 'Trunk etkinleştirildi.' : 'Trunk kapatıldı.'));
+                setTimeout(() => location.reload(), 900);
             } catch (e) {
                 b.disabled = false;
+                b.textContent = originalText;
                 this.toast(e.message, true);
             }
         });
@@ -1569,13 +1683,13 @@ const Astera = {
                         <p class="tiny muted">Örnek: <strong>Başına ekle 90</strong>, <strong>silinecek önek 0</strong>, <strong>eşleşme _X.</strong> → 0532… tuşlandığında 90532… gönderilir.</p>
                     </fieldset>
                     <fieldset class="fieldset">
-                        <legend>Trunk sırası</legend>
+                        <legend>Hat sırası</legend>
                         <div id="outboundTrunks"></div>
-                        <button class="btn sm" type="button" id="addOutboundTrunk">+ Trunk ekle</button>
+                        <button class="btn sm" type="button" id="addOutboundTrunk">+ Hat ekle</button>
                         <label class="outbound-balance"><input type="checkbox" name="equal_distribution" ${row.equal_distribution ? 'checked' : ''}>
-                            Seçili trunklara çağrıları eşit ve sırayla dağıt
+                            Seçili hatlara çağrıları eşit ve sırayla dağıt
                         </label>
-                        <p class="tiny muted">Dağıtım kapalıysa ilk trunk başarısız olduğunda sıradaki trunk denenir.</p>
+                        <p class="tiny muted">Dağıtım kapalıysa ilk hat başarısız olduğunda sıradaki hat denenir.</p>
                     </fieldset>
                     <div class="modal-actions">
                         <button class="btn" type="button" id="c">Vazgeç</button>
@@ -1944,6 +2058,26 @@ const Astera = {
                         <legend>Süre dolunca / kuyruk kullanılamazsa</legend>
                         ${this.destPair('timeout_type', 'timeout_dest', row.timeout_type || 'hangup', row.timeout_dest || '')}
                     </fieldset>
+                    <fieldset class="fieldset">
+                        <legend>Kaçan çağrı e-posta bildirimi</legend>
+                        <label>Bildirim alıcıları
+                            <textarea name="missed_call_emails" rows="3"
+                                placeholder="operasyon@example.com&#10;yonetici@example.com">${esc((row.missed_call_emails || []).join('\n'))}</textarea>
+                            <small>Her satıra bir e-posta adresi yazın. Virgül veya noktalı virgülle de ayırabilirsiniz. Alan boşsa bildirim gönderilmez.</small>
+                        </label>
+                        <label>Gönderen adı
+                            <input name="missed_call_from_name" maxlength="160"
+                                value="${esc(row.missed_call_from_name || 'Astera Santral ve Callcenter')}">
+                        </label>
+                        <label>Konu şablonu
+                            <input name="missed_call_subject_template" maxlength="500"
+                                value="${esc(row.missed_call_subject_template || '[Astera Santral ve Callcenter] Kaçan çağrı - {kuyruk}')}">
+                        </label>
+                        <label>İçerik şablonu
+                            <textarea name="missed_call_body_template" rows="10" maxlength="8000">${esc(row.missed_call_body_template || 'Astera Santral ve Callcenter\n\nKaçan çağrı bildirimi\n\nKuyruk Adı: {kuyruk}\nNumara: {numara}\nTarih / Saat: {tarih} {saat}\nKaçtığı Sıra: {sira}\nBekleme Süresi: {bekleme} sn\nSantral: {santral}')}</textarea>
+                        </label>
+                        <p class="tiny muted">Kullanılabilir alanlar: <code>{kuyruk}</code>, <code>{numara}</code>, <code>{tarih}</code>, <code>{saat}</code>, <code>{sira}</code>, <code>{bekleme}</code>, <code>{santral}</code>.</p>
+                    </fieldset>
                     <div class="modal-actions">
                         <button class="btn" type="button" id="c">Vazgeç</button>
                         <button class="btn primary">Kaydet</button>
@@ -2000,7 +2134,6 @@ const Astera = {
                 members = nextMembers;
                 Object.keys(memberPenalties).forEach((member) => delete memberPenalties[member]);
                 Object.assign(memberPenalties, nextPenalties);
-                form.elements.strategy.value = 'linear';
                 renderMembers();
                 return true;
             };
@@ -2391,10 +2524,33 @@ const Astera = {
                 blockedManual.value = '';
                 form.querySelectorAll('.dest-pair').forEach((pair) => renderDestinationPair(pair));
             });
+            const snapshot = () => JSON.stringify({
+                fields: [...new FormData(form).entries()].map(([key, value]) => [key, String(value)]),
+                blocked: String(blockedManual.value || '')
+                    .split(/[\s,;]+/)
+                    .map((number) => number.replace(/\D/g, ''))
+                    .filter(Boolean),
+                routes: [...routes.querySelectorAll('.ivr-route')].map((route) => {
+                    const pair = route.querySelector('.dest-pair');
+                    const type = pair.querySelector('.dest-type').value;
+                    return {
+                        digit: route.querySelector('.ivr-route-key').value.trim(),
+                        type,
+                        dest: type === 'external'
+                            ? pair.querySelector('.dest-manual').value
+                            : pair.querySelector('.dest-id').value
+                    };
+                })
+            });
+            const initialSnapshot = snapshot();
             form.onsubmit = async (e) => {
                 e.preventDefault();
                 const blocked = parseBlockedExtensions();
                 if (blocked === null) return;
+                if (row.id && snapshot() === initialSnapshot) {
+                    this.toast('Değişiklik yapılmadı');
+                    return;
+                }
                 const data = Object.fromEntries(new FormData(form).entries());
                 data.direct_dial = form.elements.direct_dial.checked ? '1' : '0';
                 data.blocked_extensions_json = JSON.stringify(blocked);
@@ -2561,8 +2717,7 @@ const Astera = {
                     event.target.closest('.schedule-rule')?.remove();
                 }
             });
-            form.onsubmit = async (event) => {
-                event.preventDefault();
+            const buildData = () => {
                 const data = Object.fromEntries(new FormData(form).entries());
                 data.turkey_holidays = form.elements.turkey_holidays.checked ? '1' : '0';
                 data.turkey_half_days = form.elements.turkey_half_days.checked ? '1' : '0';
@@ -2579,6 +2734,16 @@ const Astera = {
                     state: item.querySelector('[data-exception-state]').value,
                     time: item.querySelector('[data-exception-time]').value
                 })));
+                return data;
+            };
+            const initialSnapshot = JSON.stringify(buildData());
+            form.onsubmit = async (event) => {
+                event.preventDefault();
+                const data = buildData();
+                if (row.id && JSON.stringify(data) === initialSnapshot) {
+                    this.toast('Değişiklik yapılmadı');
+                    return;
+                }
                 try {
                     await this.post('time_save', data);
                     location.reload();
@@ -3309,6 +3474,15 @@ const Astera = {
         const form = document.getElementById('securityFirewallForm');
         const output = document.getElementById('securityOutput');
         const confirmButton = document.getElementById('securityConfirm');
+        const ufwState = document.getElementById('securityUfwState');
+        const ufwStateText = document.getElementById('securityUfwStateText');
+        const setUfwState = (enabled) => {
+            if (!ufwState || !ufwStateText) return;
+            ufwState.classList.toggle('is-on', enabled);
+            ufwState.classList.toggle('is-off', !enabled);
+            ufwState.setAttribute('aria-label', `UFW ${enabled ? 'açık' : 'kapalı'}`);
+            ufwStateText.textContent = `UFW ${enabled ? 'AÇIK' : 'KAPALI'}`;
+        };
         form.onsubmit = async (event) => {
             event.preventDefault();
             if (!confirm('Güvenlik duvarı kuralları değiştirilecek. Devam edilsin mi?')) return;
@@ -3321,6 +3495,7 @@ const Astera = {
             try {
                 const result = await this.post('security_firewall_apply', data);
                 output.textContent = result.output || 'Kurallar uygulandı.';
+                setUfwState(true);
                 confirmButton.disabled = false;
                 this.toast('Kurallar uygulandı; 5 dakika içinde onaylayın');
             } catch (error) {
@@ -3684,7 +3859,7 @@ const Astera = {
             files.forEach((file) => {
                 const option = document.createElement('option');
                 option.value = file.name;
-                option.textContent = `${file.name} · ${formatSize(file.size)}`;
+                option.textContent = `${file.label || file.name} · ${formatSize(file.size)}`;
                 option.selected = file.name === previous;
                 fileSelect.appendChild(option);
             });
@@ -3704,11 +3879,11 @@ const Astera = {
                 currentOutput = r.output || '';
                 const selected = (r.files || []).find((file) => file.name === currentFile);
                 fileMeta.textContent = selected
-                    ? `${currentFile} · ${formatSize(selected.size)}`
+                    ? `${selected.label || currentFile} · ${formatSize(selected.size)}`
                     : 'Log dosyası yok';
                 resultTitle.textContent = r.query
                     ? `"${r.query}" arama sonucu`
-                    : `${currentFile || 'Log'} · son ${r.lines || linesSelect.value} satır`;
+                    : `${selected?.label || currentFile || 'Log'} · son ${r.lines || linesSelect.value} satır`;
                 const visibleLines = currentOutput === '' ? 0 : currentOutput.split(/\r?\n/).length;
                 resultMeta.textContent = `${visibleLines} satır gösteriliyor`;
                 logBox.textContent = currentOutput || (r.query ? 'Eşleşen kayıt bulunamadı.' : 'Dosya boş.');
