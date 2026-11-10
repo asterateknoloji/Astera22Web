@@ -1332,6 +1332,7 @@ PY
 [[ -n "$target_local_network" ]] || die "Hedef yerel agi hesaplanamadi: $target_cidr"
 cat >/etc/astera/astera.env <<ENV
 ASTERA_CUSTOMER_NAME="$customer_env_value"
+ASTERA_TIMEZONE=Europe/Istanbul
 ASTERA_PBX_HOST=$TARGET_HOST
 ASTERA_PBX_LOCAL_NET=$target_local_network
 ASTERA_PBX_SSH_HOST=127.0.0.1

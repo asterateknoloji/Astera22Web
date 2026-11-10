@@ -28,6 +28,13 @@ function astera_env(string $name, string $default = ''): string
     return $value === false || $value === '' ? $default : $value;
 }
 
+$asteraTimezone = astera_env('ASTERA_TIMEZONE', 'Europe/Istanbul');
+if (!in_array($asteraTimezone, timezone_identifiers_list(), true)) {
+    $asteraTimezone = 'Europe/Istanbul';
+}
+date_default_timezone_set($asteraTimezone);
+define('ASTERA_TIMEZONE', $asteraTimezone);
+
 define('PBX_HOST', astera_env('ASTERA_PBX_HOST', '192.168.181.74'));
 define('PBX_SSH_HOST', astera_env('ASTERA_PBX_SSH_HOST', PBX_HOST));
 define('PANEL_DOMAIN', astera_env('ASTERA_PANEL_DOMAIN', 'santral.astera.com.tr'));

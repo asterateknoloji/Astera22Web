@@ -252,6 +252,7 @@ function astera_alarm_emit_event(
             return true;
         }
 
+        $eventTime = new DateTimeImmutable('now', new DateTimeZone('Europe/Istanbul'));
         $subject = '[Astera PBX] '
             . ($eventType === 'recovered' ? 'Düzeldi: ' : 'Olay: ')
             . $definition[1];
@@ -259,7 +260,7 @@ function astera_alarm_emit_event(
             . '<p><strong>Firma:</strong> ' . e($deptId) . '</p>'
             . '<p><strong>Olay:</strong> ' . e($summary) . '</p>'
             . ($details !== '' ? '<p><strong>Detay:</strong> ' . nl2br(e($details)) . '</p>' : '')
-            . '<p><strong>Zaman:</strong> ' . date('d.m.Y H:i:s') . '</p>';
+            . '<p><strong>Zaman:</strong> ' . $eventTime->format('d.m.Y H:i:s') . '</p>';
         try {
             astera_alarm_send_email($smtp, $recipients, $subject, $html);
             $deliveryStatus = 'sent';
