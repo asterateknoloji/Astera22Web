@@ -4,6 +4,7 @@ declare(strict_types=1);
 session_name('ASTERA_CALLCENTER_AGENT');
 require_once dirname(__DIR__) . '/includes/bootstrap.php';
 require_once dirname(__DIR__) . '/includes/callcenter.php';
+require_once dirname(__DIR__) . '/includes/ui_icons.php';
 
 if (!empty($_SESSION['callcenter_agent'])) {
     header('Location: agent_dashboard_v2.php');
@@ -49,26 +50,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Agent Login - Agent Dashboard</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="assets/agent.css?v=8">
+    <title>ASTERA · Agent girişi</title>
+    <link rel="stylesheet" href="../assets/css/tokens.css?v=<?= (int) @filemtime(dirname(__DIR__) . '/assets/css/tokens.css') ?>">
+    <link rel="stylesheet" href="assets/agent.css?v=<?= (int) @filemtime(__DIR__ . '/assets/agent.css') ?>">
 </head>
 <body class="agent-login-page">
 <main class="login-container">
     <header class="login-header">
-        <h1><i class="fas fa-headset" aria-hidden="true"></i> Agent Dashboard</h1>
-        <p>Agent Login Sistemi</p>
+        <span class="agent-brand-mark">A</span>
+        <h1>ASTERA</h1>
+        <p><?= ui_icon('headset') ?> Çağrı merkezi Agent girişi</p>
     </header>
     <section class="login-body">
         <?php if ($error !== ''): ?>
             <div class="error-message" role="alert">
-                <i class="fas fa-exclamation-circle" aria-hidden="true"></i> <?= e($error) ?>
+                <?= ui_icon('circle-alert') ?><span><?= e($error) ?></span>
             </div>
         <?php endif; ?>
         <form method="post" id="login-form" autocomplete="on">
             <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
             <div class="form-group">
-                <label for="dept"><i class="fas fa-building" aria-hidden="true"></i> Firma / Departman</label>
+                <label for="dept"><?= ui_icon('building-2') ?> Firma / Departman</label>
                 <select id="dept" name="dept" required>
                     <option value="">Seçin</option>
                     <?php foreach ($departments as $department): ?>
@@ -80,39 +82,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </select>
             </div>
             <div class="form-group">
-                <label for="username"><i class="fas fa-user" aria-hidden="true"></i> Agent ID / Dahili</label>
+                <label for="username"><?= ui_icon('user-round') ?> Agent ID / Dahili</label>
                 <input id="username" name="username" value="<?= e((string) ($_POST['username'] ?? '')) ?>"
                     placeholder="Örn. Agent_1001 veya 1001" autocomplete="username" required autofocus>
             </div>
             <div class="form-group">
-                <label for="password"><i class="fas fa-lock" aria-hidden="true"></i> Şifre</label>
+                <label for="password"><?= ui_icon('lock') ?> Şifre</label>
                 <input id="password" name="password" type="password" placeholder="Şifrenizi girin"
                     autocomplete="current-password" required>
             </div>
             <fieldset class="phone-mode-picker">
-                <legend><i class="fas fa-phone" aria-hidden="true"></i> Kullanılacak Telefon</legend>
+                <legend><?= ui_icon('phone') ?> Kullanılacak telefon</legend>
                 <div class="phone-mode-options">
                     <?php foreach ([
-                        'webrtc' => ['fa-globe', 'WebRTC', 'Tarayıcı içindeki WebPhone'],
-                        'softphone' => ['fa-headset', 'Softphone', 'Bilgisayardaki SIP uygulaması'],
-                        'desk_phone' => ['fa-phone-alt', 'Masaüstü Telefon', 'Fiziksel IP telefon'],
+                        'webrtc' => ['globe', 'WebRTC', 'Tarayıcı içindeki WebPhone'],
+                        'softphone' => ['laptop', 'Softphone', 'Bilgisayardaki SIP uygulaması'],
+                        'desk_phone' => ['phone', 'Masaüstü telefon', 'Fiziksel IP telefon'],
                     ] as $mode => [$icon, $label, $description]): ?>
                     <label class="phone-mode-option">
                         <input type="radio" name="phone_mode" value="<?= e($mode) ?>"
                             <?= (string) ($_POST['phone_mode'] ?? 'webrtc') === $mode ? ' checked' : '' ?> required>
-                        <span><i class="fas <?= e($icon) ?>" aria-hidden="true"></i><strong><?= e($label) ?></strong><small><?= e($description) ?></small></span>
+                        <span><?= ui_icon($icon) ?><strong><?= e($label) ?></strong><small><?= e($description) ?></small></span>
                     </label>
                     <?php endforeach; ?>
                 </div>
                 <div class="helper-text">Softphone ve masaüstü telefon santralde aktif değilse giriş tamamlanmaz.</div>
             </fieldset>
             <button type="submit" class="login-btn" id="login-btn">
-                <i class="fas fa-sign-in-alt" aria-hidden="true"></i> Giriş Yap
+                <?= ui_icon('log-in') ?> Giriş yap
             </button>
         </form>
     </section>
-    <footer class="login-footer"><i class="fas fa-shield-alt" aria-hidden="true"></i>
-        © 2026 Astera Call Center - Agent Dashboard
+    <footer class="login-footer"><?= ui_icon('shield-check') ?>
+        © 2026 Astera Call Center · Agent paneli
     </footer>
 </main>
 <script>

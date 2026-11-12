@@ -28,6 +28,7 @@ $showDept = current_dept_id() === null;
     </table>
 </article>
 <script>
+window.ASTERA = window.ASTERA || {};
 window.ASTERA.exts = <?= json_encode($exts, JSON_UNESCAPED_UNICODE) ?>;
 document.addEventListener('DOMContentLoaded', () => Astera.pagePaging());
 </script>

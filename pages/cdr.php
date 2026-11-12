@@ -262,8 +262,8 @@ $reportDuration = max(
             ?>
             <tr>
                 <td><?= e($row['accountcode'] ?: $row['userfield'] ?: '—') ?></td>
-                <td><?= e($row['start']) ?></td>
-                <td><?= e($row['src']) ?></td>
+                <td class="num nowrap"><?= e($row['start']) ?></td>
+                <td class="num nowrap"><?= e($row['src']) ?></td>
                 <td>
                     <?php if ($callerExtension): ?>
                         <?= e(trim((string) ($callerExtension['exten'] ?? '') . ' ' . (string) ($callerExtension['name'] ?? ''))) ?>
@@ -272,11 +272,11 @@ $reportDuration = max(
                         <span class="muted">—</span>
                     <?php endif; ?>
                 </td>
-                <td><?= e($row['dst']) ?></td>
+                <td class="num nowrap"><?= e($row['dst']) ?></td>
                 <td>
                     <?= $trunkLabels ? implode('<br>', array_map('e', $trunkLabels)) : '—' ?>
                 </td>
-                <td><?= e($row['billsec']) ?> sn</td>
+                <td class="nowrap"><?= e($row['billsec']) ?> sn</td>
                 <td><span class="pill <?= $row['disposition'] === 'ANSWERED' ? 'ok' : 'dim' ?>"><?= e($row['disposition']) ?></span></td>
                 <td>
                     <?php if ($description !== ''): ?>

@@ -36,38 +36,90 @@ $formatDuration = static function (int $seconds): string {
 usort($exts, static function (array $left, array $right): int {
     return strnatcasecmp((string) ($left['exten'] ?? ''), (string) ($right['exten'] ?? ''));
 });
+
+$systemResources = null;
+$serviceStates = [];
+if (is_super()) {
+    $cpuCount = max(1, (int) preg_match_all('/^processor\s*:/m', (string) @file_get_contents('/proc/cpuinfo')));
+    $loadAverage = function_exists('sys_getloadavg') ? (sys_getloadavg() ?: null) : null;
+    $memInfo = [];
+    foreach ((array) @file('/proc/meminfo') as $memLine) {
+        if (preg_match('/^(\w+):\s+(\d+)/', (string) $memLine, $memMatch)) {
+            $memInfo[$memMatch[1]] = (float) $memMatch[2] * 1024;
+        }
+    }
+    $diskTotal = @disk_total_space('/');
+    $diskFree = @disk_free_space('/');
+    $uptimeSeconds = (int) (float) explode(' ', (string) @file_get_contents('/proc/uptime'))[0];
+    $formatBytes = static function (float $bytes): string {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $index = 0;
+        while ($bytes >= 1024 && $index < count($units) - 1) {
+            $bytes /= 1024;
+            $index++;
+        }
+        return number_format($bytes, $index >= 3 ? 1 : 0, ',', '.') . ' ' . $units[$index];
+    };
+    $memTotal = (float) ($memInfo['MemTotal'] ?? 0);
+    $memUsed = $memTotal - (float) ($memInfo['MemAvailable'] ?? $memTotal);
+    $systemResources = [
+        'cpu' => $loadAverage !== null ? min(100, ($loadAverage[0] / $cpuCount) * 100) : null,
+        'cpu_note' => $loadAverage !== null
+            ? 'Yük ortalaması ' . number_format($loadAverage[0], 2, ',', '.') . ' · ' . $cpuCount . ' çekirdek'
+            : 'Ölçülemedi',
+        'ram' => $memTotal > 0 ? ($memUsed / $memTotal) * 100 : null,
+        'ram_note' => $memTotal > 0 ? $formatBytes($memUsed) . ' / ' . $formatBytes($memTotal) : 'Ölçülemedi',
+        'disk' => $diskTotal ? (($diskTotal - (float) $diskFree) / $diskTotal) * 100 : null,
+        'disk_note' => $diskTotal ? $formatBytes($diskTotal - (float) $diskFree) . ' / ' . $formatBytes((float) $diskTotal) : 'Ölçülemedi',
+        'uptime' => $uptimeSeconds > 0
+            ? sprintf('%d gün %02d sa %02d dk', intdiv($uptimeSeconds, 86400), intdiv($uptimeSeconds % 86400, 3600), intdiv($uptimeSeconds % 3600, 60))
+            : 'Ölçülemedi',
+    ];
+    $serviceLabels = ['asterisk' => 'Asterisk', 'postgresql' => 'PostgreSQL', 'nginx' => 'Nginx web sunucusu', 'fail2ban' => 'Fail2ban'];
+    $serviceOutput = [];
+    if (function_exists('exec')) {
+        @exec('systemctl is-active ' . implode(' ', array_keys($serviceLabels)) . ' 2>/dev/null', $serviceOutput);
+    }
+    foreach (array_keys($serviceLabels) as $serviceIndex => $serviceName) {
+        $serviceStates[] = [
+            'label' => $serviceLabels[$serviceName],
+            'state' => trim((string) ($serviceOutput[$serviceIndex] ?? '')),
+        ];
+    }
+}
+$meterClass = static fn(?float $value): string => $value === null ? '' : ($value >= 90 ? 'bad' : ($value >= 75 ? 'warn' : ''));
 ?>
 <?php if (!$deptId && is_super()): ?>
     <p class="banner">Üstteki listeden bir firma seçin; her firma kendi aboneleri, dış hattı ve raporlarıyla izole çalışır. Firmalar birbirini arayamaz.</p>
 <?php endif; ?>
-<section class="dashboard-kpis" id="dashStats">
+<section class="dashboard-kpis" id="dashStats" aria-label="Bugünkü çağrı göstergeleri">
     <article class="dashboard-kpi incoming">
-        <span class="dashboard-kpi-icon">↙</span>
+        <span class="dashboard-kpi-icon"><?= ui_icon('phone-incoming') ?></span>
         <div><small>Bugün gelen</small><strong><?= (int) ($dailyCalls['incoming'] ?? 0) ?></strong></div>
         <span><?= (int) ($dailyCalls['incoming_answered'] ?? 0) ?> cevaplanan</span>
     </article>
     <article class="dashboard-kpi outgoing">
-        <span class="dashboard-kpi-icon">↗</span>
+        <span class="dashboard-kpi-icon"><?= ui_icon('phone-outgoing') ?></span>
         <div><small>Bugün giden</small><strong><?= (int) ($dailyCalls['outgoing'] ?? 0) ?></strong></div>
         <span><?= (int) ($dailyCalls['outgoing_answered'] ?? 0) ?> cevaplanan</span>
     </article>
     <article class="dashboard-kpi service">
-        <span class="dashboard-kpi-icon">◎</span>
+        <span class="dashboard-kpi-icon"><?= ui_icon('circle-check') ?></span>
         <div><small>Cevaplanma</small><strong>%<?= e(number_format((float) ($analytics['answer_rate'] ?? 0), 1, ',', '.')) ?></strong></div>
         <span>bugünkü servis oranı</span>
     </article>
     <article class="dashboard-kpi duration">
-        <span class="dashboard-kpi-icon">◷</span>
+        <span class="dashboard-kpi-icon"><?= ui_icon('clock') ?></span>
         <div><small>Ort. görüşme</small><strong><?= e($formatDuration((int) ($analytics['avg_billsec'] ?? 0))) ?></strong></div>
         <span>cevaplanan çağrılar</span>
     </article>
     <article class="dashboard-kpi live">
-        <span class="dashboard-kpi-icon">●</span>
+        <span class="dashboard-kpi-icon"><?= ui_icon('radio') ?></span>
         <div><small>Kayıtlı SIP</small><strong id="regCount">—</strong></div>
         <span><?= count($exts) ?> toplam abone</span>
     </article>
     <article class="dashboard-kpi active">
-        <span class="dashboard-kpi-icon">☎</span>
+        <span class="dashboard-kpi-icon"><?= ui_icon('phone') ?></span>
         <div><small>Aktif çağrı</small><strong id="callCount">—</strong></div>
         <span>şu anda</span>
     </article>
@@ -112,7 +164,7 @@ usort($exts, static function (array $left, array $right): int {
         <div class="dashboard-outcomes">
             <?php foreach ($outcomes as $label => $value): ?>
                 <div class="dashboard-outcome <?= e(strtolower(str_replace(' ', '-', $label))) ?>">
-                    <div><span><?= e($label) ?></span><strong><?= $value ?></strong></div>
+                    <div><span><?= e(['Answered' => 'Cevaplanan', 'No Answer' => 'Cevapsız', 'Busy' => 'Meşgul', 'Failed' => 'Başarısız'][$label] ?? $label) ?></span><strong><?= $value ?></strong></div>
                     <i style="--width: <?= e(number_format(($value / $outcomeMax) * 100, 1, '.', '')) ?>%"></i>
                 </div>
             <?php endforeach; ?>
@@ -130,6 +182,54 @@ usort($exts, static function (array $left, array $right): int {
         <pre class="log" id="uptimeBox">yükleniyor…</pre>
     </article>
 </section>
+
+<?php if ($systemResources !== null): ?>
+<section class="dashboard-system-grid">
+    <article class="card">
+        <span class="dashboard-section-kicker">SUNUCU</span>
+        <h2>Sistem kaynakları</h2>
+        <?php foreach ([
+            ['cpu', 'cpu', 'İşlemci yükü'],
+            ['ram', 'memory-stick', 'Bellek'],
+            ['disk', 'hard-drive', 'Sistem diski'],
+        ] as [$resourceKey, $resourceIcon, $resourceLabel]): ?>
+            <?php $resourceValue = $systemResources[$resourceKey]; ?>
+            <div class="resource-meter <?= $meterClass($resourceValue) ?>">
+                <div class="resource-meter-head">
+                    <span><?= ui_icon($resourceIcon) ?><?= e($resourceLabel) ?></span>
+                    <strong><?= $resourceValue === null ? '—' : '%' . e(number_format($resourceValue, 0, ',', '.')) ?></strong>
+                </div>
+                <div class="resource-meter-bar"><i style="--value: <?= e(number_format((float) $resourceValue, 1, '.', '')) ?>%"></i></div>
+                <small><?= e($systemResources[$resourceKey . '_note']) ?></small>
+            </div>
+        <?php endforeach; ?>
+    </article>
+    <article class="card">
+        <span class="dashboard-section-kicker">SERVİSLER</span>
+        <h2>Sunucu durumu</h2>
+        <ul class="service-list">
+            <li>
+                <span><?= ui_icon('server') ?>Sunucu çalışma süresi</span>
+                <strong><?= e($systemResources['uptime']) ?></strong>
+            </li>
+            <?php foreach ($serviceStates as $service): ?>
+                <li>
+                    <span><?= ui_icon('activity') ?><?= e($service['label']) ?></span>
+                    <?php if ($service['state'] === 'active'): ?>
+                        <span class="pill ok">Çalışıyor</span>
+                    <?php elseif ($service['state'] === ''): ?>
+                        <span class="pill dim">Bilinmiyor</span>
+                    <?php elseif (in_array($service['state'], ['activating', 'reloading'], true)): ?>
+                        <span class="pill warn">Başlatılıyor</span>
+                    <?php else: ?>
+                        <span class="pill bad"><?= e($service['state'] === 'inactive' ? 'Durmuş' : ucfirst($service['state'])) ?></span>
+                    <?php endif; ?>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    </article>
+</section>
+<?php endif; ?>
 
 <details class="card dashboard-extension-details">
     <summary>Abone durumları <span class="pill dim"><?= count($exts) ?> abone</span></summary>

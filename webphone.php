@@ -161,7 +161,8 @@ $pendingDial = preg_replace('/[^0-9+*#]/', '', substr((string) ($_GET['dial'] ??
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASTERA · WebPhone</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=52">
+    <link rel="stylesheet" href="assets/css/tokens.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/tokens.css') ?>">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/app.css') ?>">
 </head>
 <body class="login-body webphone-body">
 <?php if (!$webphoneExtension): ?>

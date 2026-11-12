@@ -32,6 +32,7 @@ window.ASTERA = Object.assign(window.ASTERA || {}, {
     wss: <?= json_encode(pbx_wss_url()) ?>
 });
 </script>
+<script src="assets/js/layout.js?v=<?= (int) @filemtime(dirname(__DIR__) . '/assets/js/layout.js') ?>"></script>
 <script src="assets/js/app.js?v=<?= (int) @filemtime(dirname(__DIR__) . '/assets/js/app.js') ?>"></script>
 </body>
 </html>

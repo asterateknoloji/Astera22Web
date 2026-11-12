@@ -36,7 +36,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASTERA · Giriş</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20">
+    <link rel="stylesheet" href="assets/css/tokens.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/tokens.css') ?>">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/app.css') ?>">
+    <link rel="stylesheet" href="assets/css/design-system.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/design-system.css') ?>">
 </head>
 <body class="login-body">
     <main class="login-card">

@@ -4,6 +4,7 @@ declare(strict_types=1);
 session_name('ASTERA_CALLCENTER_SUPERVISOR');
 require_once dirname(__DIR__, 2) . '/includes/bootstrap.php';
 require_once dirname(__DIR__, 2) . '/includes/callcenter.php';
+require_once dirname(__DIR__, 2) . '/includes/ui_icons.php';
 
 if (empty($_SESSION['callcenter_supervisor'])) {
     header('Location: ' . (str_contains($_SERVER['SCRIPT_NAME'] ?? '', '/reports/') ? '../../login.php' : 'login.php'));
@@ -80,38 +81,38 @@ function supervisor_nav_sections(): array
 {
     return [
         'GENEL' => [
-            ['dashboard.php', '⌂', 'Genel Bakış', 'dashboard_genel'],
-            ['reports/callcenter/dashboard1.php', '▦', 'Callcenter Dashboard', 'dashboard_callcenter'],
-            ['fop_abone.php', '◉', 'Canlı İzleme', 'canli_izleme'],
+            ['dashboard.php', 'house', 'Genel Bakış', 'dashboard_genel'],
+            ['reports/callcenter/dashboard1.php', 'layout-dashboard', 'Callcenter Dashboard', 'dashboard_callcenter'],
+            ['fop_abone.php', 'radio', 'Canlı İzleme', 'canli_izleme'],
         ],
         'AYRINTILI RAPORLAR' => [
-            ['reports/callcenter/kuyruk_detay.php', '☏', 'Kuyruk Detay', 'cc_kuyruk_detay'],
-            ['reports/callcenter/agentdetay.php', '♙', 'Agent Detay', 'cc_agent_detay'],
-            ['reports/callcenter/agent_logins.php', '↪', 'Login / Logout', 'cc_login_logout'],
-            ['reports/callcenter/moladetay.php', 'Ⅱ', 'Mola Detay', 'cc_mola_raporlar'],
+            ['reports/callcenter/kuyruk_detay.php', 'phone-incoming', 'Kuyruk Detay', 'cc_kuyruk_detay'],
+            ['reports/callcenter/agentdetay.php', 'user-round', 'Agent Detay', 'cc_agent_detay'],
+            ['reports/callcenter/agent_logins.php', 'log-in', 'Login / Logout', 'cc_login_logout'],
+            ['reports/callcenter/moladetay.php', 'coffee', 'Mola Detay', 'cc_mola_raporlar'],
         ],
         'ÖZET RAPORLAR' => [
-            ['reports/callcenter/agent_ozet1.php', '♟', 'Agent Özet', 'cc_agent_ozet'],
-            ['reports/callcenter/agent_ozet2.php', '▤', 'Agent Özet 2', 'cc_agent_ozet'],
-            ['reports/callcenter/agent_anket_ozet.php', '★', 'Agent Anket Özeti', 'cc_anket'],
-            ['reports/callcenter/molaozet.php', '◷', 'Mola Özet', 'cc_mola_raporlar'],
-            ['reports/callcenter/molaozettoplam.php', '◴', 'Mola Özet Toplam', 'cc_mola_raporlar'],
-            ['reports/callcenter/kuyrukozet.php', '▥', 'Kuyruk Özet', 'cc_kuyruk_detay'],
-            ['reports/callcenter/kuyruk_analiz.php', '⌕', 'Kuyruk Analiz', 'cc_kuyruk_detay'],
+            ['reports/callcenter/agent_ozet1.php', 'users', 'Agent Özet', 'cc_agent_ozet'],
+            ['reports/callcenter/agent_ozet2.php', 'chart-column', 'Agent Özet 2', 'cc_agent_ozet'],
+            ['reports/callcenter/agent_anket_ozet.php', 'star', 'Agent Anket Özeti', 'cc_anket'],
+            ['reports/callcenter/molaozet.php', 'clock', 'Mola Özet', 'cc_mola_raporlar'],
+            ['reports/callcenter/molaozettoplam.php', 'calendar-clock', 'Mola Özet Toplam', 'cc_mola_raporlar'],
+            ['reports/callcenter/kuyrukozet.php', 'layout-grid', 'Kuyruk Özet', 'cc_kuyruk_detay'],
+            ['reports/callcenter/kuyruk_analiz.php', 'chart-line', 'Kuyruk Analiz', 'cc_kuyruk_detay'],
         ],
         'YÖNETİM' => [
-            ['dashboard.php?tab=callcenter&subtab=sistem', '⚙', 'Sistem Tanımları', 'sistem_ayarlar'],
-            ['reports/callcenter/agent_tanim.php', '♟', 'Agent Tanım', 'sistem_ayarlar'],
-            ['reports/callcenter/agent_yonetim.php', '◎', 'Agent Yönetimi', 'sistem_ayarlar'],
-            ['reports/callcenter/kuyruklistesi.php', '≡', 'Kuyruk Listesi', 'sistem_ayarlar'],
-            ['reports/callcenter/kuyruksla.php', '◴', 'Kuyruk SLA', 'sistem_ayarlar'],
-            ['reports/callcenter/mola_tanim.php', '◷', 'Mola Tanım', 'sistem_ayarlar'],
-            ['reports/callcenter/anket_yonetim.php', '▣', 'Anket Yönetimi', 'cc_anket'],
-            ['reports/callcenter/mailtanimlari.php', '✉', 'Mail Tanımları', 'sistem_ayarlar'],
-            ['reports/callcenter/kullanicilar.php', '♙', 'Kullanıcılar', 'sistem_kullanicilar'],
-            ['reports/callcenter/yetki_gruplari.php', '⌘', 'Yetki Grupları', 'sistem_yetki'],
-            ['reports/callcenter/ayarlar.php', '⚙', 'Ayarlar', 'sistem_ayarlar'],
-            ['reports/callcenter/lograpor.php', '☷', 'Log Raporu', 'log_rapor'],
+            ['dashboard.php?tab=callcenter&subtab=sistem', 'settings', 'Sistem Tanımları', 'sistem_ayarlar'],
+            ['reports/callcenter/agent_tanim.php', 'user-plus', 'Agent Tanım', 'sistem_ayarlar'],
+            ['reports/callcenter/agent_yonetim.php', 'book-user', 'Agent Yönetimi', 'sistem_ayarlar'],
+            ['reports/callcenter/kuyruklistesi.php', 'list', 'Kuyruk Listesi', 'sistem_ayarlar'],
+            ['reports/callcenter/kuyruksla.php', 'gauge', 'Kuyruk SLA', 'sistem_ayarlar'],
+            ['reports/callcenter/mola_tanim.php', 'timer', 'Mola Tanım', 'sistem_ayarlar'],
+            ['reports/callcenter/anket_yonetim.php', 'clipboard-list', 'Anket Yönetimi', 'cc_anket'],
+            ['reports/callcenter/mailtanimlari.php', 'mail', 'Mail Tanımları', 'sistem_ayarlar'],
+            ['reports/callcenter/kullanicilar.php', 'users', 'Kullanıcılar', 'sistem_kullanicilar'],
+            ['reports/callcenter/yetki_gruplari.php', 'key-round', 'Yetki Grupları', 'sistem_yetki'],
+            ['reports/callcenter/ayarlar.php', 'sliders-horizontal', 'Ayarlar', 'sistem_ayarlar'],
+            ['reports/callcenter/lograpor.php', 'file-text', 'Log Raporu', 'log_rapor'],
         ],
     ];
 }
@@ -182,7 +183,7 @@ function supervisor_sidebar(): void
     $script = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
     echo '<aside class="app-sidebar" id="app-sidebar" aria-label="Ana menü">';
     echo '<a class="sidebar-brand" href="' . e(supervisor_nav_path('dashboard.php')) . '">';
-    echo '<span class="sidebar-logo">A</span><span><strong>ASTERA</strong><small>CALL CENTER</small></span></a>';
+    echo '<span class="sidebar-logo">A</span><span><strong>ASTERA</strong><small>SUPERVISOR</small></span></a>';
     echo '<nav class="sidebar-nav">';
     foreach (supervisor_nav_sections() as $section => $items) {
         $visible = array_filter($items, static fn(array $item): bool =>
@@ -197,7 +198,7 @@ function supervisor_sidebar(): void
         echo '<button class="sidebar-heading" type="button" data-section-toggle="' . e($sectionKey)
             . '" data-default-open="' . ($section === 'GENEL' ? 'true' : 'false')
             . '" aria-expanded="true" aria-controls="' . e($sectionLinksId) . '"><span>'
-            . e($section) . '</span><span class="sidebar-heading-chevron" aria-hidden="true">⌄</span></button>';
+            . e($section) . '</span><span class="sidebar-heading-chevron" aria-hidden="true">' . ui_icon('chevron-down') . '</span></button>';
         echo '<div class="sidebar-section-links" id="' . e($sectionLinksId) . '">';
         foreach ($visible as $item) {
             [$path, $icon, $label] = $item;
@@ -219,7 +220,7 @@ function supervisor_sidebar(): void
             }
             echo '<a class="sidebar-link' . ($active ? ' active' : '') . '" href="'
                 . e(supervisor_nav_path($path)) . '"><span class="sidebar-icon" aria-hidden="true">'
-                . e($icon) . '</span><span>' . e($label) . '</span></a>';
+                . ui_icon((string) $icon) . '</span><span>' . e($label) . '</span></a>';
         }
         echo '</div></div>';
     }
@@ -232,21 +233,24 @@ function supervisor_sidebar(): void
 function supervisor_page_start(string $title, string $back = '../../dashboard.php?tab=callcenter&subtab=raporlar'): void
 {
     global $supervisor, $deptId;
-    $css = str_contains($_SERVER['SCRIPT_NAME'] ?? '', '/reports/') ? '../../assets/css/theme.css' : 'assets/css/theme.css';
+    $base = str_contains($_SERVER['SCRIPT_NAME'] ?? '', '/reports/') ? '../../' : '';
+    $version = static fn(string $file): int => (int) @filemtime(dirname(__DIR__, 2) . '/' . $file);
     echo '<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>' . e($title) . ' · Astera Callcenter</title><link rel="stylesheet" href="' . e($css) . '?v=28"></head><body class="supervisor-app">';
+    echo '<title>' . e($title) . ' · Astera Callcenter</title><link rel="stylesheet" href="' . e($base) . '../assets/css/tokens.css?v=' . $version('assets/css/tokens.css') . '">'
+        . '<link rel="stylesheet" href="' . e($base) . 'assets/css/theme.css?v=' . $version('Supervisor/assets/css/theme.css') . '">'
+        . '<link rel="stylesheet" href="' . e($base) . 'assets/css/supervisor.css?v=' . $version('Supervisor/assets/css/supervisor.css') . '"></head><body class="supervisor-app">';
     echo '<div class="app-shell">';
     supervisor_sidebar();
     echo '<div class="app-workspace"><header class="app-topbar"><div class="topbar-title-wrap">';
-    echo '<button class="menu-toggle" id="menu-toggle" type="button" aria-controls="app-sidebar" aria-expanded="false">☰</button>';
+    echo '<button class="menu-toggle" id="menu-toggle" type="button" aria-controls="app-sidebar" aria-expanded="false" aria-label="Menüyü aç">' . ui_icon('menu') . '</button>';
     echo '<div><h1>' . e($title) . '</h1><p>Bugün · ' . e(date('d.m.Y H:i')) . '</p></div></div>';
     echo '<div class="topbar-actions"><span class="tenant-pill"><span class="presence-dot"></span>'
         . e($deptId) . '</span>';
     if ($back !== '') {
-        echo '<a class="btn btn-outline" href="' . e($back) . '">← Geri</a>';
+        echo '<a class="btn btn-outline" href="' . e($back) . '">' . ui_icon('arrow-left') . ' Geri</a>';
     }
     echo '<form method="post" action="' . e(supervisor_nav_path('logout.php')) . '"><input type="hidden" name="csrf" value="'
-        . e(csrf_token()) . '"><button class="icon-button" type="submit" title="Çıkış">↪</button></form>';
+        . e(csrf_token()) . '"><button class="icon-button" type="submit" title="Çıkış" aria-label="Çıkış">' . ui_icon('log-out') . '</button></form>';
     echo '</div></header><main class="dashboard-container">';
 }
 

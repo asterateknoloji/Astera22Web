@@ -4,6 +4,7 @@ declare(strict_types=1);
 session_name('ASTERA_CALLCENTER_AGENT');
 require_once dirname(__DIR__) . '/includes/bootstrap.php';
 require_once dirname(__DIR__) . '/includes/callcenter.php';
+require_once dirname(__DIR__) . '/includes/ui_icons.php';
 if (empty($_SESSION['callcenter_agent'])) {
     header('Location: login.php');
     exit;
@@ -27,16 +28,16 @@ $initialCallDuration = sprintf(
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Agent Dashboard - <?= e((string) $agent['username']) ?></title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="../assets/css/app.css?v=49">
-    <link rel="stylesheet" href="assets/agent.css?v=8">
+    <title>ASTERA · Agent paneli - <?= e((string) $agent['username']) ?></title>
+    <link rel="stylesheet" href="../assets/css/tokens.css?v=<?= (int) @filemtime(dirname(__DIR__) . '/assets/css/tokens.css') ?>">
+    <link rel="stylesheet" href="../assets/css/app.css?v=<?= (int) @filemtime(dirname(__DIR__) . '/assets/css/app.css') ?>">
+    <link rel="stylesheet" href="assets/agent.css?v=<?= (int) @filemtime(__DIR__ . '/assets/agent.css') ?>">
 </head>
 <body class="agent-dashboard-page">
 <main class="dashboard-shell">
     <header class="dashboard-header">
         <div class="header-left">
-            <div class="header-title"><i class="fas fa-headset" aria-hidden="true"></i> Agent Dashboard</div>
+            <div class="header-title"><span class="agent-brand-mark" aria-hidden="true">A</span><span>ASTERA <small>Agent paneli</small></span></div>
             <div class="agent-badge">Agent ID: <?= e((string) $agent['username']) ?> · <?= e((string) $agent['extension']) ?> · <?= e($phoneModeLabel) ?></div>
         </div>
         <div class="header-right">
@@ -46,18 +47,18 @@ $initialCallDuration = sprintf(
             </div>
             <form method="post" action="logout.php" id="logout-form">
                 <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-                <button class="logout-btn" type="submit"><i class="fas fa-sign-out-alt"></i> Çıkış</button>
+                <button class="logout-btn" type="submit"><?= ui_icon('log-out') ?> Çıkış</button>
             </form>
         </div>
     </header>
     <div id="notice" class="notice" role="status"></div>
     <section class="dashboard-grid">
         <article class="panel panel-left">
-            <header class="panel-header"><div class="panel-title"><span class="panel-icon"><i class="fas fa-list"></i></span>Kuyruk Durumları</div></header>
+            <header class="panel-header"><div class="panel-title"><span class="panel-icon"><?= ui_icon('list') ?></span>Kuyruk Durumları</div></header>
             <div class="panel-content"><div id="queue-list" class="queue-list"></div></div>
         </article>
         <article class="panel panel-center">
-            <header class="panel-header"><div class="panel-title"><span class="panel-icon icon-green"><i class="fas fa-phone-alt"></i></span><?= e($phoneModeLabel) ?> · <?= e((string) $agent['extension']) ?></div></header>
+            <header class="panel-header"><div class="panel-title"><span class="panel-icon icon-green"><?= ui_icon('phone') ?></span><?= e($phoneModeLabel) ?> · <?= e((string) $agent['extension']) ?></div></header>
             <div class="panel-content agent-webphone">
                 <?php if ($webphoneReady): ?>
                     <script>
@@ -94,7 +95,7 @@ $initialCallDuration = sprintf(
                     ?>
                 <?php elseif (in_array($phoneMode, ['softphone', 'desk_phone'], true)): ?>
                     <div class="external-phone-active">
-                        <i class="fas <?= $phoneMode === 'softphone' ? 'fa-headset' : 'fa-phone-alt' ?>" aria-hidden="true"></i>
+                        <?= ui_icon($phoneMode === 'softphone' ? 'laptop' : 'phone', 'external-phone-icon') ?>
                         <strong><?= e($phoneModeLabel) ?> · <?= e((string) $agent['extension']) ?></strong>
                         <span id="external-phone-help">Telefon hazır, çağrı bekleniyor.</span>
                         <div class="external-call-display" id="external-call-display" data-state="<?= e((string) ($snapshot['extension_status']['state'] ?? 'available')) ?>">
@@ -109,7 +110,7 @@ $initialCallDuration = sprintf(
                     </div>
                 <?php else: ?>
                     <div class="webphone-unavailable">
-                        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+                        <?= ui_icon('triangle-alert', 'webphone-unavailable-icon') ?>
                         <strong>Telefon kullanıma hazır değil</strong>
                         <span>Çıkış yapıp abone için etkin bir telefon türüyle tekrar giriş yapın.</span>
                     </div>
@@ -117,11 +118,11 @@ $initialCallDuration = sprintf(
             </div>
         </article>
         <article class="panel">
-            <header class="panel-header"><div class="panel-title"><span class="panel-icon icon-pink"><i class="fas fa-phone-volume"></i></span>Bekleyen Çağrılar</div></header>
+            <header class="panel-header"><div class="panel-title"><span class="panel-icon icon-pink"><?= ui_icon('phone-call') ?></span>Bekleyen Çağrılar</div></header>
             <div class="panel-content table-wrap" id="waiting-calls"></div>
         </article>
         <article class="panel">
-            <header class="panel-header"><div class="panel-title"><span class="panel-icon icon-orange"><i class="fas fa-coffee"></i></span>Mola Yönetimi</div></header>
+            <header class="panel-header"><div class="panel-title"><span class="panel-icon icon-orange"><?= ui_icon('coffee') ?></span>Mola Yönetimi</div></header>
             <div class="panel-content">
                 <div class="break-time-grid">
                     <div class="time-card">Login Süresi<strong id="login-duration">00:00:00</strong></div>
@@ -133,7 +134,7 @@ $initialCallDuration = sprintf(
     </section>
     <section class="panel stats-panel">
         <header class="panel-header stats-head">
-            <div class="panel-title"><span class="panel-icon icon-blue"><i class="fas fa-chart-line"></i></span>Günlük İstatistikler</div>
+            <div class="panel-title"><span class="panel-icon icon-blue"><?= ui_icon('chart-line') ?></span>Günlük İstatistikler</div>
             <div id="daily-stats" class="stat-cards"></div>
         </header>
         <div class="panel-content">
@@ -148,6 +149,6 @@ window.AGENT_APP = <?= json_encode([
     'snapshot' => $snapshot,
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 </script>
-<script src="assets/agent.js?v=6"></script>
+<script src="assets/agent.js?v=<?= (int) @filemtime(__DIR__ . '/assets/agent.js') ?>"></script>
 </body>
 </html>

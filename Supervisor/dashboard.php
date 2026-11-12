@@ -5,17 +5,17 @@ require_once __DIR__ . '/includes/bootstrap.php';
 $systemView = (string) ($_GET['subtab'] ?? '') === 'sistem';
 if ($systemView) {
     $systemItems = [
-        ['reports/callcenter/agent_tanim.php', '♟', 'Agent Tanım', 'Agent hesapları, dahili ve kuyruk atamaları', 'sistem_ayarlar'],
-        ['reports/callcenter/kuyruklistesi.php', '≡', 'Kuyruk Listesi', 'PBX kuyruklarını ve üyelerini görüntüleyin', 'sistem_ayarlar'],
-        ['reports/callcenter/mola_tanim.php', '◷', 'Mola Tanım', 'Firma mola türlerini ve sürelerini yönetin', 'sistem_ayarlar'],
-        ['reports/callcenter/ayarlar.php', '⚙', 'Ayarlar', 'Firmaya özel sistem ayarlarını yönetin', 'sistem_ayarlar'],
-        ['reports/callcenter/kullanicilar.php', '♙', 'Kullanıcılar', 'Supervisor kullanıcılarını ve kapsamlarını yönetin', 'sistem_kullanicilar'],
-        ['reports/callcenter/agent_yonetim.php', '◎', 'Agent Yönetimi', 'Agent oturumlarını ve hesap durumlarını izleyin', 'sistem_ayarlar'],
-        ['reports/callcenter/yetki_gruplari.php', '⌘', 'Yetki Grupları', 'Ekran ve rapor erişimlerini yönetin', 'sistem_yetki'],
-        ['reports/callcenter/lograpor.php', '☷', 'Log Raporu', 'Sistem erişim ve işlem kayıtlarını inceleyin', 'log_rapor'],
-        ['reports/callcenter/kuyruksla.php', '◴', 'Kuyruk SLA', 'Kuyruk cevaplama hedeflerini tanımlayın', 'sistem_ayarlar'],
-        ['reports/callcenter/anket_yonetim.php', '▣', 'Anket Yönetimi', 'Anket, kategori ve soruları yönetin', 'cc_anket'],
-        ['reports/callcenter/mailtanimlari.php', '✉', 'Mail Tanımları', 'Kuyruk bildirim alıcılarını yönetin', 'sistem_ayarlar'],
+        ['reports/callcenter/agent_tanim.php', 'user-plus', 'Agent Tanım', 'Agent hesapları, dahili ve kuyruk atamaları', 'sistem_ayarlar'],
+        ['reports/callcenter/kuyruklistesi.php', 'list', 'Kuyruk Listesi', 'PBX kuyruklarını ve üyelerini görüntüleyin', 'sistem_ayarlar'],
+        ['reports/callcenter/mola_tanim.php', 'timer', 'Mola Tanım', 'Firma mola türlerini ve sürelerini yönetin', 'sistem_ayarlar'],
+        ['reports/callcenter/ayarlar.php', 'sliders-horizontal', 'Ayarlar', 'Firmaya özel sistem ayarlarını yönetin', 'sistem_ayarlar'],
+        ['reports/callcenter/kullanicilar.php', 'users', 'Kullanıcılar', 'Supervisor kullanıcılarını ve kapsamlarını yönetin', 'sistem_kullanicilar'],
+        ['reports/callcenter/agent_yonetim.php', 'book-user', 'Agent Yönetimi', 'Agent oturumlarını ve hesap durumlarını izleyin', 'sistem_ayarlar'],
+        ['reports/callcenter/yetki_gruplari.php', 'key-round', 'Yetki Grupları', 'Ekran ve rapor erişimlerini yönetin', 'sistem_yetki'],
+        ['reports/callcenter/lograpor.php', 'file-text', 'Log Raporu', 'Sistem erişim ve işlem kayıtlarını inceleyin', 'log_rapor'],
+        ['reports/callcenter/kuyruksla.php', 'gauge', 'Kuyruk SLA', 'Kuyruk cevaplama hedeflerini tanımlayın', 'sistem_ayarlar'],
+        ['reports/callcenter/anket_yonetim.php', 'clipboard-list', 'Anket Yönetimi', 'Anket, kategori ve soruları yönetin', 'cc_anket'],
+        ['reports/callcenter/mailtanimlari.php', 'mail', 'Mail Tanımları', 'Kuyruk bildirim alıcılarını yönetin', 'sistem_ayarlar'],
     ];
     supervisor_page_start('Sistem Tanımları', '');
     ?>
@@ -30,7 +30,7 @@ if ($systemView) {
             if (!callcenter_supervisor_has_permission($supervisor, $permission)) continue;
         ?>
             <a class="report-item system-definition-item" href="<?= e($path) ?>">
-                <span class="report-icon"><?= e($icon) ?></span>
+                <span class="report-icon"><?= ui_icon((string) $icon) ?></span>
                 <span class="report-label"><?= e($label) ?></span>
                 <small><?= e($description) ?></small>
             </a>

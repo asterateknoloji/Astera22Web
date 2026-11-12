@@ -56,7 +56,8 @@ header('Referrer-Policy: same-origin');
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ASTERA · Müşteri Kartı</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=42">
+    <link rel="stylesheet" href="assets/css/tokens.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/tokens.css') ?>">
+    <link rel="stylesheet" href="assets/css/app.css?v=<?= (int) @filemtime(__DIR__ . '/assets/css/app.css') ?>">
 </head>
 <body class="crm-popup-body">
 <header class="crm-popup-head">
