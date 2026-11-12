@@ -2,10 +2,18 @@
 $rows = scoped('ringgroups');
 $exts = scoped('extensions');
 $showDept = current_dept_id() === null;
+$ringgroupLicense = license_capacity_view('callcenter.ringgroups', 'Ring grup', current_dept_id());
+$mohFiles = [];
+try {
+    $mohFiles = pbx_moh_files(current_dept_id());
+} catch (Throwable) {
+    $mohFiles = [];
+}
 ?>
 <div class="toolbar">
     <p class="muted">
         <strong>Ring grupları</strong> birden fazla dahiliye eş zamanlı veya sırayla arama yapar.<br>
+        Yeni ring gruplarına 8600'den başlayan boş bir dahili otomatik atanır.<br>
         <strong>Ringall:</strong> Tüm üyeler aynı anda çalar. <strong>Hunt:</strong> Sırayla biri cevaplana kadar dener.<br>
         <strong>Arama onayı</strong>: Üye cevapladığında 1'e basarak onaylamalı (meşgulse atlar).<br>
         <strong>CID Öneki</strong>: Üye telefonunda arayan bilgisinin başına eklenir (ör: "Satış: Müşteri").
@@ -27,6 +35,15 @@ $showDept = current_dept_id() === null;
         </thead>
         <tbody>
         <?php foreach ($rows as $row): ?>
+            <?php
+            $memberPriorityIndex = [];
+            foreach ((array) ($row['member_priorities'] ?? []) as $priorityRow) {
+                if (is_array($priorityRow) && (string) ($priorityRow['member'] ?? '') !== '') {
+                    $memberPriorityIndex[(string) $priorityRow['member']] = max(1, (int) ($priorityRow['priority'] ?? 1));
+                }
+            }
+            $ringMembers = array_values((array) ($row['members'] ?? []));
+            ?>
             <tr>
                 <?php if ($showDept): ?><td><?= e(dept_name((string) ($row['dept'] ?? ''))) ?></td><?php endif; ?>
                 <td><code><?= e($row['id']) ?></code><br><small><?= e($row['name'] ?? '') ?></small></td>
@@ -39,11 +56,17 @@ $showDept = current_dept_id() === null;
                     <?= ($row['record'] ?? true) ? strtoupper(e((string) ($row['record_format'] ?? 'wav'))) : 'Kapalı' ?>
                 </td>
                 <td>
-                    <?= e(implode(', ', $row['members'] ?? [])) ?>
+                    <?= e(implode(' → ', array_map(
+                        static fn($member, $index): string => ($index + 1) . '. ' . (string) $member
+                            . ' (Sıra ' . (int) ($memberPriorityIndex[(string) $member] ?? 1) . ')',
+                        $ringMembers,
+                        array_keys($ringMembers)
+                    ))) ?>
                     <?php if (!empty($row['cid_prefix'])): ?><br><small class="muted">CID: <?= e($row['cid_prefix']) ?></small><?php endif; ?>
                 </td>
                 <td class="right">
                     <button class="btn sm" type="button" data-edit-rg='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
+                    <button class="btn sm" type="button" data-copy-rg='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Çoğalt</button>
                     <button class="btn sm danger" type="button" data-del-rg="<?= e($row['id']) ?>">Sil</button>
                 </td>
             </tr>
@@ -57,5 +80,7 @@ $showDept = current_dept_id() === null;
 <script>
 window.ASTERA = window.ASTERA || {};
 window.ASTERA.exts = <?= json_encode($exts, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.mohFiles = <?= json_encode($mohFiles, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.ringgroupLicense = <?= json_encode($ringgroupLicense, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 document.addEventListener('DOMContentLoaded', () => Astera.pageRinggroups());
 </script>

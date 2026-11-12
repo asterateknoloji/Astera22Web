@@ -1,0 +1,20 @@
+[Unit]
+Description=Astera uzak Syslog aktarım servisi
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=astera-panel
+Group=astera-panel
+WorkingDirectory=/var/www/astera
+ExecStart=/usr/bin/php /var/www/astera/bin/syslog_export_service.php
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -3,15 +3,31 @@
 #include <pjsua2.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <windows.h>
+#include <mmsystem.h>
 
 namespace astera_sip {
 namespace {
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) {
+    return {};
+  }
+  const int size = MultiByteToWideChar(
+      CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+  std::wstring result(size, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                      result.data(), size);
+  return result;
+}
 
 std::string PjsipLogPath() {
   const char* local_app_data = std::getenv("LOCALAPPDATA");
@@ -112,6 +128,7 @@ class SipEngine::Impl {
     endpoint_config.uaConfig.threadCnt = 0;
     endpoint_config.uaConfig.mainThreadOnly = true;
     endpoint_config.uaConfig.userAgent = "AsteraSoftPhone/1.0 PJSIP/2.17";
+    endpoint_config.medConfig.sndAutoCloseTime = 1;
     endpoint_config.logConfig.level = 5;
     endpoint_config.logConfig.consoleLevel = 5;
     endpoint_config.logConfig.writer = new RedactingLogWriter(PjsipLogPath());
@@ -132,12 +149,10 @@ class SipEngine::Impl {
 
     tone_generator_ = std::make_unique<pj::ToneGenerator>();
     tone_generator_->createToneGenerator();
-    tone_generator_->startTransmit(
-        endpoint_->audDevManager().getPlaybackDevMedia());
     ringtone_generator_ = std::make_unique<pj::ToneGenerator>();
     ringtone_generator_->createToneGenerator();
-    ringtone_generator_->startTransmit(
-        endpoint_->audDevManager().getPlaybackDevMedia());
+    ringback_generator_ = std::make_unique<pj::ToneGenerator>();
+    ringback_generator_->createToneGenerator();
 
     Emit("disconnected", 0, "UDP transport hazır");
   }
@@ -215,6 +230,9 @@ class SipEngine::Impl {
     if (call_ && call_->isActive()) {
       throw std::logic_error("Another call is already active.");
     }
+    StopRingback();
+    outgoing_call_ = true;
+    early_media_active_ = false;
     call_.reset();
     const std::string uri =
         destination.rfind("sip:", 0) == 0
@@ -247,6 +265,7 @@ class SipEngine::Impl {
   void HangupCall() {
     EnsureCall();
     StopRingtone();
+    StopRingback();
     pj::CallOpParam parameter;
     call_->hangup(parameter);
   }
@@ -264,6 +283,11 @@ class SipEngine::Impl {
       return;
     }
     tone_generator_->stop();
+    if (!tone_connected_) {
+      tone_generator_->startTransmit(
+          endpoint_->audDevManager().getPlaybackDevMedia());
+      tone_connected_ = true;
+    }
     pj::ToneDigit tone;
     tone.digit = digit[0];
     tone.on_msec = 120;
@@ -272,6 +296,8 @@ class SipEngine::Impl {
     pj::ToneDigitVector tones;
     tones.push_back(tone);
     tone_generator_->playDigits(tones);
+    tone_disconnect_at_ =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
   }
 
   void SetHold(bool hold) {
@@ -321,14 +347,141 @@ class SipEngine::Impl {
     ApplyAudioLevels();
   }
 
+  AudioDeviceState GetAudioDevices() {
+    if (!endpoint_) {
+      throw std::logic_error("PJSIP is not initialized.");
+    }
+    auto& manager = endpoint_->audDevManager();
+    const int previous_capture_id = manager.getCaptureDev();
+    const int previous_playback_id = manager.getPlaybackDev();
+    std::string previous_capture_name;
+    std::string previous_capture_driver;
+    std::string previous_playback_name;
+    std::string previous_playback_driver;
+    auto devices = manager.enumDev2();
+    for (const auto& device : devices) {
+      if (static_cast<int>(device.id) == previous_capture_id) {
+        previous_capture_name = device.name;
+        previous_capture_driver = device.driver;
+      }
+      if (static_cast<int>(device.id) == previous_playback_id) {
+        previous_playback_name = device.name;
+        previous_playback_driver = device.driver;
+      }
+    }
+    if (!manager.sndIsActive()) {
+      manager.refreshDevs();
+      devices = manager.enumDev2();
+      for (const auto& device : devices) {
+        if (!previous_capture_name.empty() &&
+            device.name == previous_capture_name &&
+            device.driver == previous_capture_driver &&
+            device.inputCount > 0) {
+          manager.setCaptureDev(static_cast<int>(device.id));
+        }
+        if (!previous_playback_name.empty() &&
+            device.name == previous_playback_name &&
+            device.driver == previous_playback_driver &&
+            device.outputCount > 0) {
+          manager.setPlaybackDev(static_cast<int>(device.id));
+        }
+      }
+    }
+    AudioDeviceState result;
+    result.capture_device_id = manager.getCaptureDev();
+    result.playback_device_id = manager.getPlaybackDev();
+    for (const auto& device : devices) {
+      result.devices.push_back(AudioDevice{
+          static_cast<int>(device.id),
+          device.name,
+          device.driver,
+          static_cast<int>(device.inputCount),
+          static_cast<int>(device.outputCount),
+      });
+    }
+    return result;
+  }
+
+  void SetAudioDevices(int capture_device_id, int playback_device_id) {
+    if (!endpoint_) {
+      throw std::logic_error("PJSIP is not initialized.");
+    }
+    bool capture_valid = false;
+    bool playback_valid = false;
+    for (const auto& device : endpoint_->audDevManager().enumDev2()) {
+      if (static_cast<int>(device.id) == capture_device_id &&
+          device.inputCount > 0) {
+        capture_valid = true;
+      }
+      if (static_cast<int>(device.id) == playback_device_id &&
+          device.outputCount > 0) {
+        playback_valid = true;
+      }
+    }
+    if (!capture_valid || !playback_valid) {
+      throw std::invalid_argument("Selected audio device is unavailable.");
+    }
+    auto& manager = endpoint_->audDevManager();
+    manager.setCaptureDev(capture_device_id);
+    manager.setPlaybackDev(playback_device_id);
+    if (call_ && call_->isActive()) {
+      ApplyAudioLevels();
+    }
+  }
+
+  void SetRingtoneStyle(int style) {
+    ringtone_style_ = std::clamp(style, 0, 3);
+  }
+
+  void SetRingtoneFile(const std::string& path) {
+    StopRingtone();
+    ringtone_player_.reset();
+    ringtone_file_path_.clear();
+    if (path.empty()) {
+      return;
+    }
+    const std::filesystem::path file(path);
+    if (!std::filesystem::is_regular_file(file)) {
+      throw std::invalid_argument("Selected ringtone file is unavailable.");
+    }
+    ringtone_file_path_ = file.string();
+    std::string extension = file.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char character) {
+                     return static_cast<char>(std::tolower(character));
+                   });
+    if (extension == ".wav") {
+      auto player = std::make_unique<pj::AudioMediaPlayer>();
+      player->createPlayer(file.string());
+      ringtone_player_ = std::move(player);
+      return;
+    }
+    if (extension != ".mp3" && extension != ".mpeg" &&
+        extension != ".mpg") {
+      ringtone_file_path_.clear();
+      throw std::invalid_argument("Selected ringtone format is unsupported.");
+    }
+  }
+
   void PollEvents() {
     if (endpoint_) {
       endpoint_->libHandleEvents(0);
+      if (tone_connected_ &&
+          std::chrono::steady_clock::now() >= tone_disconnect_at_) {
+        tone_generator_->stop();
+        tone_generator_->stopTransmit(
+            endpoint_->audDevManager().getPlaybackDevMedia());
+        tone_connected_ = false;
+      }
     }
   }
 
   void Dispose() {
+    StopRingtone();
+    StopRingback();
     call_.reset();
+    ringtone_player_.reset();
+    ringback_generator_.reset();
     ringtone_generator_.reset();
     tone_generator_.reset();
     if (account_) {
@@ -391,6 +544,9 @@ class SipEngine::Impl {
       rejected.answer(parameter);
       return;
     }
+    StopRingback();
+    outgoing_call_ = false;
+    early_media_active_ = false;
     call_ = std::make_unique<NativeCall>(account, *this, call_id);
     const auto info = call_->getInfo();
     StartRingtone();
@@ -407,11 +563,18 @@ class SipEngine::Impl {
       case PJSIP_INV_STATE_EARLY:
       case PJSIP_INV_STATE_CONNECTING:
         state = "ringing";
+        if (outgoing_call_ && !early_media_active_) {
+          StartRingback();
+        }
         break;
       case PJSIP_INV_STATE_CONFIRMED:
+        StopRingback();
         state = held_ ? "held" : "connected";
         break;
       case PJSIP_INV_STATE_DISCONNECTED:
+        StopRingback();
+        outgoing_call_ = false;
+        early_media_active_ = false;
         held_ = false;
         state = static_cast<int>(info.lastStatusCode) >= 300
                     ? "failed"
@@ -440,6 +603,12 @@ class SipEngine::Impl {
       }
       auto audio = call.getAudioMedia(static_cast<int>(media.index));
       auto& audio_devices = endpoint_->audDevManager();
+      if (outgoing_call_) {
+        // 183 Session Progress may carry the PBX/operator's own early media.
+        // Prefer that audio and avoid playing the local ringback over it.
+        early_media_active_ = true;
+        StopRingback();
+      }
       audio.adjustTxLevel(speaker_level_);
       audio_devices.getCaptureDevMedia().adjustTxLevel(
           muted_ ? 0.0f : microphone_level_);
@@ -489,27 +658,115 @@ class SipEngine::Impl {
   }
 
   void StartRingtone() {
-    if (!ringtone_generator_ || ringtone_active_) {
+    if (ringtone_active_) {
       return;
     }
-    pj::ToneDesc tone;
-    tone.freq1 = 440;
-    tone.freq2 = 480;
-    tone.on_msec = 1000;
-    tone.off_msec = 3000;
-    tone.volume = 0;
+    if (ringtone_style_ == 3 && !ringtone_file_path_.empty()) {
+      if (ringtone_player_) {
+        ringtone_player_->setPos(0);
+        ringtone_player_->startTransmit(
+            endpoint_->audDevManager().getPlaybackDevMedia());
+        custom_ringtone_active_ = true;
+        ringtone_active_ = true;
+        return;
+      }
+      mciSendStringW(L"close AsteraRingtone", nullptr, 0, nullptr);
+      const std::wstring command =
+          L"open \"" + Utf8ToWide(ringtone_file_path_) +
+          L"\" type mpegvideo alias AsteraRingtone";
+      if (mciSendStringW(command.c_str(), nullptr, 0, nullptr) == 0 &&
+          mciSendStringW(L"play AsteraRingtone repeat", nullptr, 0, nullptr) ==
+              0) {
+        custom_ringtone_active_ = true;
+        mci_ringtone_active_ = true;
+        ringtone_active_ = true;
+        return;
+      }
+      mciSendStringW(L"close AsteraRingtone", nullptr, 0, nullptr);
+    }
+    if (!ringtone_generator_) {
+      return;
+    }
     pj::ToneDescVector tones;
-    tones.push_back(tone);
+    pj::ToneDesc tone;
+    tone.volume = 0;
+    if (ringtone_style_ == 1) {
+      tone.freq1 = 425;
+      tone.freq2 = 425;
+      tone.on_msec = 800;
+      tone.off_msec = 3200;
+      tones.push_back(tone);
+    } else if (ringtone_style_ == 2) {
+      tone.freq1 = 440;
+      tone.freq2 = 480;
+      tone.on_msec = 450;
+      tone.off_msec = 200;
+      tones.push_back(tone);
+      tone.on_msec = 450;
+      tone.off_msec = 2900;
+      tones.push_back(tone);
+    } else {
+      tone.freq1 = 440;
+      tone.freq2 = 480;
+      tone.on_msec = 1000;
+      tone.off_msec = 3000;
+      tones.push_back(tone);
+    }
+    ringtone_generator_->startTransmit(
+        endpoint_->audDevManager().getPlaybackDevMedia());
     ringtone_generator_->play(tones, true);
     ringtone_active_ = true;
   }
 
   void StopRingtone() {
-    if (!ringtone_generator_ || !ringtone_active_) {
+    if (!ringtone_active_) {
       return;
     }
-    ringtone_generator_->stop();
+    if (custom_ringtone_active_) {
+      if (mci_ringtone_active_) {
+        mciSendStringW(L"stop AsteraRingtone", nullptr, 0, nullptr);
+        mciSendStringW(L"close AsteraRingtone", nullptr, 0, nullptr);
+      } else if (ringtone_player_) {
+        ringtone_player_->stopTransmit(
+            endpoint_->audDevManager().getPlaybackDevMedia());
+        ringtone_player_->setPos(0);
+      }
+    } else if (ringtone_generator_) {
+      ringtone_generator_->stop();
+      ringtone_generator_->stopTransmit(
+          endpoint_->audDevManager().getPlaybackDevMedia());
+    }
+    custom_ringtone_active_ = false;
+    mci_ringtone_active_ = false;
     ringtone_active_ = false;
+  }
+
+  void StartRingback() {
+    if (ringback_active_ || !ringback_generator_) {
+      return;
+    }
+    pj::ToneDesc tone;
+    tone.freq1 = 425;
+    tone.freq2 = 425;
+    tone.on_msec = 1000;
+    tone.off_msec = 4000;
+    tone.volume = 0;
+    pj::ToneDescVector tones;
+    tones.push_back(tone);
+    ringback_generator_->startTransmit(
+        endpoint_->audDevManager().getPlaybackDevMedia());
+    ringback_generator_->play(tones, true);
+    ringback_active_ = true;
+  }
+
+  void StopRingback() {
+    if (!ringback_active_ || !ringback_generator_ || !endpoint_) {
+      return;
+    }
+    ringback_generator_->stop();
+    ringback_generator_->stopTransmit(
+        endpoint_->audDevManager().getPlaybackDevMedia());
+    ringback_active_ = false;
   }
 
   void ApplyAudioLevels() {
@@ -550,10 +807,21 @@ class SipEngine::Impl {
   std::unique_ptr<NativeCall> call_;
   std::unique_ptr<pj::ToneGenerator> tone_generator_;
   std::unique_ptr<pj::ToneGenerator> ringtone_generator_;
+  std::unique_ptr<pj::ToneGenerator> ringback_generator_;
+  std::unique_ptr<pj::AudioMediaPlayer> ringtone_player_;
   std::string account_domain_;
+  std::string ringtone_file_path_;
   bool muted_ = false;
   bool held_ = false;
   bool ringtone_active_ = false;
+  bool custom_ringtone_active_ = false;
+  bool mci_ringtone_active_ = false;
+  bool ringback_active_ = false;
+  bool outgoing_call_ = false;
+  bool early_media_active_ = false;
+  int ringtone_style_ = 0;
+  bool tone_connected_ = false;
+  std::chrono::steady_clock::time_point tone_disconnect_at_{};
   float microphone_level_ = 1.0f;
   float speaker_level_ = 1.0f;
 };
@@ -672,6 +940,35 @@ void SipEngine::SetMicrophoneLevel(float level) {
 void SipEngine::SetSpeakerLevel(float level) {
   try {
     impl_->SetSpeakerLevel(level);
+  } catch (const pj::Error& error) {
+    throw std::runtime_error(error.info());
+  }
+}
+
+AudioDeviceState SipEngine::GetAudioDevices() {
+  try {
+    return impl_->GetAudioDevices();
+  } catch (const pj::Error& error) {
+    throw std::runtime_error(error.info());
+  }
+}
+
+void SipEngine::SetAudioDevices(int capture_device_id,
+                                int playback_device_id) {
+  try {
+    impl_->SetAudioDevices(capture_device_id, playback_device_id);
+  } catch (const pj::Error& error) {
+    throw std::runtime_error(error.info());
+  }
+}
+
+void SipEngine::SetRingtoneStyle(int style) {
+  impl_->SetRingtoneStyle(style);
+}
+
+void SipEngine::SetRingtoneFile(const std::string& path) {
+  try {
+    impl_->SetRingtoneFile(path);
   } catch (const pj::Error& error) {
     throw std::runtime_error(error.info());
   }

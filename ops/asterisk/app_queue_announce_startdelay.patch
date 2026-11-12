@@ -1,0 +1,42 @@
+--- a/apps/app_queue.c
++++ b/apps/app_queue.c
+@@ -2054,6 +2054,7 @@
+ 	int announcepositionlimit;          /*!< How many positions we announce? */
+ 	int announcefrequency;              /*!< How often to announce their position */
+ 	int minannouncefrequency;           /*!< The minimum number of seconds between position announcements (def. 15) */
++	int announcepositionstartdelay;     /*!< Delay the first position announcement after joining */
+ 	int periodicannouncestartdelay;     /*!< How long into the queue should the periodic accouncement start */
+ 	int periodicannouncefrequency;      /*!< How often to play periodic announcement */
+ 	int numperiodicannounce;            /*!< The number of periodic announcements configured */
+@@ -3192,6 +3193,7 @@
+ 	q->weight = 0;
+ 	q->timeoutrestart = 0;
+ 	q->periodicannouncefrequency = 0;
++	q->announcepositionstartdelay = 0;
+ 	q->periodicannouncestartdelay = -1;
+ 	q->randomperiodicannounce = 0;
+ 	q->numperiodicannounce = 0;
+@@ -3603,6 +3605,8 @@
+ 		ast_string_field_set(q, sound_reporthold, val);
+ 	} else if (!strcasecmp(param, "announce-frequency")) {
+ 		q->announcefrequency = atoi(val);
++	} else if (!strcasecmp(param, "announce-position-startdelay")) {
++		q->announcepositionstartdelay = MAX(0, atoi(val));
+ 	} else if (!strcasecmp(param, "announce-to-first-user")) {
+ 		q->announce_to_first_user = ast_true(val);
+ 	} else if (!strcasecmp(param, "min-announce-frequency")) {
+@@ -4434,6 +4438,14 @@
+
+ 	/* Let minannouncefrequency seconds pass between the start of each position announcement */
+ 	time(&now);
++	/* Keep the caller's first position announcement silent until the
++	 * configured delay has elapsed. Subsequent announcements retain the
++	 * standard announce-frequency/min-announce-frequency behavior. */
++	if (!qe->last_pos_said && qe->parent->announcepositionstartdelay > 0
++		&& (now - qe->start) < qe->parent->announcepositionstartdelay) {
++		return 0;
++	}
++
+ 	if ((now - qe->last_pos) < qe->parent->minannouncefrequency) {
+ 		return 0;
+ 	}

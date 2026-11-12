@@ -1,0 +1,47 @@
+/* ASTERA Supervisor sign-in screens. Colors, type and spacing come from ../../../assets/css/tokens.css. */
+
+*{box-sizing:border-box}
+body{margin:0;font:400 var(--fs-body)/1.5 var(--font-body);color:var(--ink);-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit}
+.ui-icon{width:16px;height:16px;flex:0 0 auto;vertical-align:-3px}
+
+.auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:var(--navy-900)}
+.auth-shell{width:100%;max-width:440px;overflow:hidden;background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;box-shadow:var(--shadow-overlay)}
+.auth-brand{display:grid;justify-items:center;gap:8px;padding:32px 28px 0;text-align:center}
+.sidebar-logo{display:inline-grid;place-items:center;width:52px;height:52px;border-radius:14px;background:var(--brand-bright);color:#fff;font:700 26px/1 var(--font-heading)}
+.auth-brand strong{display:block;margin-top:4px;font:700 26px/1.2 var(--font-heading);letter-spacing:.16em;color:var(--ink)}
+.auth-brand small{display:block;margin-top:2px;color:var(--muted);font-size:var(--fs-help);font-weight:500;letter-spacing:.14em}
+.auth-card{padding:20px 28px 28px}
+.auth-card h1{display:flex;align-items:center;justify-content:center;gap:8px;margin:0;font:600 var(--fs-section)/1.3 var(--font-heading);color:var(--ink)}
+.auth-card h1 .ui-icon{width:20px;height:20px;color:var(--brand)}
+.auth-card>p{margin:4px 0 20px;color:var(--muted);text-align:center}
+.auth-card form{display:grid;gap:16px}
+.auth-card label{display:grid;gap:6px;font-size:var(--fs-label);font-weight:500;color:var(--ink-2)}
+.auth-card label>span{display:flex;align-items:center;gap:6px}
+.auth-card label>span .ui-icon{width:15px;height:15px;color:var(--muted)}
+.auth-card input,.auth-card select{width:100%;min-height:42px;padding:9px 12px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background-color:var(--card);color:var(--ink);font-weight:400;transition:border-color .15s,box-shadow .15s}
+.auth-card select{appearance:none;padding-right:34px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235f6b7e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;background-size:16px}
+.auth-card input::placeholder{color:#98a2b3}
+.auth-card input:hover,.auth-card select:hover{border-color:#aeb8c7}
+.auth-card input:focus,.auth-card select:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-ring)}
+.auth-card input:user-invalid{border-color:var(--bad)}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:44px;padding:10px 16px;border:1px solid transparent;border-radius:var(--radius-sm);font-weight:600;text-decoration:none;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}
+.btn-primary{margin-top:4px;background:var(--brand);color:#fff}
+.btn-primary:hover{background:var(--brand-hover)}
+.btn-outline{margin-top:10px;border-color:var(--line-strong);background:var(--card);color:var(--ink-2)}
+.btn-outline:hover{border-color:var(--brand);color:var(--brand)}
+.btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--brand-ring)}
+
+.alert{display:flex;align-items:flex-start;gap:8px;margin:0 0 16px;padding:11px 14px;border:1px solid transparent;border-radius:var(--radius-sm)}
+.alert .ui-icon{margin-top:2px}
+.alert-danger{color:var(--bad);background:var(--bad-soft);border-color:#f5c2c2}
+
+.auth-foot{display:flex;align-items:center;justify-content:center;gap:6px;padding:14px 20px;border-top:1px solid var(--line-soft);background:var(--surface-2);color:var(--muted);font-size:var(--fs-help);text-align:center}
+.auth-foot .ui-icon{width:14px;height:14px;color:var(--ok)}
+
+@media(max-width:480px){
+.auth-brand{padding:26px 18px 0}
+.auth-card{padding:18px 18px 22px}
+}
+@media(prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}}

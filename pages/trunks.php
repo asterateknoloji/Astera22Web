@@ -14,6 +14,7 @@ $showDept = current_dept_id() === null;
                 <th>Ad</th>
                 <th>Tür</th>
                 <th>Durum</th>
+                <th>Gelen çağrı</th>
                 <th>Sunucu</th>
                 <th>Kullanıcı</th>
                 <th></th>
@@ -26,6 +27,11 @@ $showDept = current_dept_id() === null;
                 <td><code><?= e($row['id']) ?></code><br><small><?= e($row['name'] ?? '') ?></small></td>
                 <td><?= ($row['type'] ?? '') === 'peer' ? 'IP eş' : 'Kayıtlı' ?></td>
                 <td><?= ($row['enabled'] ?? true) ? 'Etkin' : 'Devre dışı' ?></td>
+                <td>
+                    <?= ($row['inbound_mode'] ?? (($row['type'] ?? '') === 'peer' ? 'direct' : 'routes')) === 'direct'
+                        ? 'Doğrudan dahili'
+                        : 'Gelen kuralları' ?>
+                </td>
                 <td><?= e($row['host'] ?? '') ?>:<?= e($row['port'] ?? 5060) ?></td>
                 <td><?= e($row['username'] ?? '') ?></td>
                 <td class="right">
@@ -33,12 +39,13 @@ $showDept = current_dept_id() === null;
                         <?= ($row['enabled'] ?? true) ? 'Devre dışı bırak' : 'Etkinleştir' ?>
                     </button>
                     <button class="btn sm" type="button" data-edit-trunk='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Düzenle</button>
+                    <button class="btn sm" type="button" data-copy-trunk='<?= e(json_encode($row, JSON_UNESCAPED_UNICODE)) ?>'>Çoğalt</button>
                     <button class="btn sm danger" type="button" data-del-trunk="<?= e($row['id']) ?>">Sil</button>
                 </td>
             </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-            <tr><td colspan="7" class="muted">Trunk yok.</td></tr>
+            <tr><td colspan="8" class="muted">Trunk yok.</td></tr>
         <?php endif; ?>
         </tbody>
     </table>

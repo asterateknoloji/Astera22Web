@@ -1,0 +1,17 @@
+[Unit]
+Description=Astera PBX alarm denetimi
+After=network-online.target postgresql.service asterisk.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=astera-panel
+Group=astera-panel
+WorkingDirectory=/var/www/astera
+ExecStart=/usr/bin/php /var/www/astera/bin/check_alarms.php
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/astera-alarms

@@ -30,6 +30,7 @@ function store_init(): void
             ],
         ],
         'trunks' => [],
+        'pri_spans' => [],
         'outbound' => [],
         'inbound' => [],
         'queues' => [],
@@ -62,42 +63,89 @@ function store_init(): void
     store_database_init(array_keys($defaults));
 }
 
+function &store_request_cache(): array
+{
+    static $cache = [];
+    return $cache;
+}
+
+function store_cache_forget(?string $name = null): void
+{
+    $cache =& store_request_cache();
+    if ($name === null) {
+        $cache = [];
+        return;
+    }
+    unset($cache[$name]);
+}
+
+function &store_request_changes(): array
+{
+    static $changes = [];
+    return $changes;
+}
+
+function store_request_mark_changed(string $name = 'external'): void
+{
+    if ($name === 'pending_changes') {
+        return;
+    }
+    $changes =& store_request_changes();
+    $changes[$name] = true;
+}
+
+function store_request_has_changes(): bool
+{
+    return store_request_changes() !== [];
+}
+
 function store_read(string $name): array
 {
     store_validate_name($name);
+    $cache =& store_request_cache();
+    if (array_key_exists($name, $cache)) {
+        return $cache[$name];
+    }
     if (function_exists('pbx_relational_enabled')
         && pbx_relational_enabled()
         && pbx_relational_supports($name)) {
-        return pbx_relational_read($name);
+        return $cache[$name] = pbx_relational_read($name);
     }
     $file = DATA_PATH . DIRECTORY_SEPARATOR . $name . '.json';
     if (!is_file($file)) {
-        return [];
+        return $cache[$name] = [];
     }
     $raw = file_get_contents($file);
     $data = json_decode((string) $raw, true);
-    return is_array($data) ? $data : [];
+    return $cache[$name] = (is_array($data) ? $data : []);
 }
 
 function store_write(string $name, array $data): void
 {
     store_validate_name($name);
+    $data = array_values($data);
+    if (store_read($name) === $data) {
+        return;
+    }
+    store_request_mark_changed($name);
+    store_cache_forget($name);
     if (is_file(DATA_PATH . DIRECTORY_SEPARATOR . '.relational-migration-lock')) {
         throw new RuntimeException('Veritabanı geçişi sürüyor; lütfen işlemi kısa süre sonra yeniden deneyin');
     }
     if (function_exists('pbx_relational_enabled')
         && pbx_relational_enabled()
         && pbx_relational_supports($name)) {
-        pbx_relational_write($name, array_values($data));
+        pbx_relational_write($name, $data);
     } else {
-        store_database_write($name, array_values($data));
+        store_database_write($name, $data);
     }
-    store_local_write($name, array_values($data));
+    store_local_write($name, $data);
     @unlink(DATA_PATH . DIRECTORY_SEPARATOR . '.database-write-pending');
 }
 
 function store_local_write(string $name, array $data): void
 {
+    store_cache_forget($name);
     $file = DATA_PATH . DIRECTORY_SEPARATOR . $name . '.json';
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
@@ -114,18 +162,67 @@ function store_upsert(string $name, array $item, string $key): array
 {
     $rows = store_read($name);
     $found = false;
+    $changed = false;
+    $position = count($rows);
     foreach ($rows as $i => $row) {
         if ((string) ($row[$key] ?? '') === (string) $item[$key]) {
-            $rows[$i] = array_merge($row, $item);
+            $merged = array_merge($row, $item);
+            $changed = $merged !== $row;
+            $rows[$i] = $merged;
             $found = true;
+            $position = $i;
             break;
         }
     }
     if (!$found) {
         $rows[] = $item;
+        $changed = true;
     }
-    store_write($name, array_values($rows));
+    $rows = array_values($rows);
+    if (!$changed) {
+        return $rows;
+    }
+    store_request_mark_changed($name);
+    if (
+        $name !== 'departments'
+        && function_exists('pbx_relational_enabled')
+        && pbx_relational_enabled()
+        && pbx_relational_supports($name)
+    ) {
+        pbx_relational_upsert_row($name, $rows[$position], $position);
+        store_local_write($name, $rows);
+        @unlink(DATA_PATH . DIRECTORY_SEPARATOR . '.database-write-pending');
+    } else {
+        store_write($name, $rows);
+    }
     return $rows;
+}
+
+function store_append_rows(
+    string $name,
+    array $allRows,
+    array $newRows,
+    int $startPosition
+): array {
+    $allRows = array_values($allRows);
+    $newRows = array_values($newRows);
+    if (!$newRows) {
+        return $allRows;
+    }
+    store_request_mark_changed($name);
+    if (
+        $name !== 'departments'
+        && function_exists('pbx_relational_enabled')
+        && pbx_relational_enabled()
+        && pbx_relational_supports($name)
+    ) {
+        pbx_relational_insert_rows($name, $newRows, $startPosition);
+        store_local_write($name, $allRows);
+        @unlink(DATA_PATH . DIRECTORY_SEPARATOR . '.database-write-pending');
+    } else {
+        store_write($name, $allRows);
+    }
+    return $allRows;
 }
 
 function store_delete(string $name, string $key, string $value): array
@@ -344,6 +441,20 @@ function store_database_write(string $name, array $data): void
 
 function store_database_exec(string $sql, string $error): void
 {
+    if (function_exists('pbx_relational_pdo')) {
+        $pdo = pbx_relational_pdo();
+        if ($pdo instanceof PDO) {
+            try {
+                $pdo->exec($sql);
+                return;
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw new RuntimeException($error . ' — ' . $e->getMessage(), 0, $e);
+            }
+        }
+    }
     $result = pbx_odbc_sql($sql);
     if (!$result['ok'] || str_contains((string) ($result['output'] ?? ''), '[ISQL]ERROR')) {
         throw new RuntimeException($error . ' — ' . trim((string) ($result['output'] ?? '')));

@@ -8,6 +8,7 @@ Type=simple
 User=astera-panel
 Group=astera-panel
 WorkingDirectory=/var/www/astera
+EnvironmentFile=-/etc/astera/astera.env
 ExecStart=/usr/bin/php /var/www/astera/bin/url_trigger_worker.php
 Restart=always
 RestartSec=3

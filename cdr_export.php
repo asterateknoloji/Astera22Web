@@ -13,13 +13,30 @@ $filters = [
     'disposition' => trim((string) ($_GET['disposition'] ?? '')),
     'uniqueid' => trim((string) ($_GET['uniqueid'] ?? '')),
 ];
-$rows = pbx_cdr(5000, current_dept_id(), $filters);
+$rows = pbx_cdr(0, current_dept_id(), $filters);
 $format = strtolower(trim((string) ($_GET['format'] ?? 'excel')));
 $stamp = date('Ymd-His');
 
 function cdr_export_description(array $row): string
 {
     $parts = explode('|', (string) ($row['userfield'] ?? ''));
+    if (($parts[1] ?? '') === 'CID') {
+        $labels = [];
+        $inbound = trim((string) ($parts[2] ?? ''));
+        $destinationType = strtoupper(trim((string) ($parts[3] ?? '')));
+        $destination = trim((string) ($parts[4] ?? ''));
+        if ($inbound !== '') {
+            $labels[] = 'Inbound: ' . $inbound;
+        }
+        if ($destination !== '') {
+            $labels[] = match ($destinationType) {
+                'QUEUE' => 'Kuyruk: ' . $destination,
+                'RINGGROUP' => 'Ring grup: ' . $destination,
+                default => 'Hedef: ' . $destination,
+            };
+        }
+        return implode(' · ', $labels);
+    }
     if (($parts[1] ?? '') === 'BLACKLIST') {
         return 'Kara liste nedeniyle reddedildi: ' . (string) ($parts[2] ?? $row['src'] ?? '');
     }
@@ -37,10 +54,8 @@ function cdr_export_description(array $row): string
 
 function cdr_export_internal(array $row): string
 {
-    if (!preg_match('#^PJSIP/(.+)-[A-Fa-f0-9]+$#', (string) ($row['channel'] ?? ''), $match)) {
-        return '';
-    }
-    $extension = find_sip_user($match[1]);
+    $info = pbx_cdr_internal_info($row, current_dept_id());
+    $extension = $info['extension'] ?? null;
     return $extension
         ? trim((string) ($extension['exten'] ?? '') . ' ' . (string) ($extension['name'] ?? ''))
         : '';
@@ -48,12 +63,14 @@ function cdr_export_internal(array $row): string
 
 function cdr_export_values(array $row): array
 {
+    $trunks = pbx_cdr_trunk_labels($row, current_dept_id());
     return [
         (string) (($row['accountcode'] ?? '') ?: ($row['userfield'] ?? '')),
         (string) ($row['start'] ?? ''),
         (string) ($row['src'] ?? ''),
         cdr_export_internal($row),
         (string) ($row['dst'] ?? ''),
+        implode(' / ', $trunks),
         (string) ($row['duration'] ?? '0'),
         (string) ($row['billsec'] ?? '0'),
         (string) ($row['disposition'] ?? ''),
@@ -75,7 +92,7 @@ if ($format === 'excel') {
     echo "\xEF\xBB\xBF";
     $output = fopen('php://output', 'wb');
     fputcsv($output, [
-        'Firma', 'Başlangıç', 'Kaynak', 'Arayan dahili', 'Hedef', 'Toplam süre (sn)',
+        'Firma', 'Başlangıç', 'Kaynak', 'Arayan dahili', 'Hedef', 'Trunk', 'Toplam süre (sn)',
         'Konuşma süresi (sn)', 'Durum', 'Açıklama', 'UNIQUEID', 'LINKEDID',
     ], ';');
     foreach ($rows as $row) {
@@ -114,14 +131,15 @@ function cdr_pdf_cell(string $value, int $length): string
 }
 
 $columns = [
-    ['Firma', 18, 55],
-    ['Başlangıç', 20, 112],
-    ['Kaynak', 18, 96],
-    ['Arayan dahili', 18, 105],
-    ['Hedef', 18, 96],
+    ['Firma', 15, 45],
+    ['Başlangıç', 20, 105],
+    ['Kaynak', 16, 80],
+    ['Arayan dahili', 16, 90],
+    ['Hedef', 16, 80],
+    ['Trunk', 18, 90],
     ['Süre', 7, 42],
     ['Durum', 11, 68],
-    ['Açıklama', 40, 232],
+    ['Açıklama', 34, 206],
 ];
 $pageChunks = array_chunk($rows, 42);
 if (!$pageChunks) {
@@ -155,7 +173,10 @@ foreach ($pageChunks as $pageIndex => $pageRows) {
     $y = 517;
     foreach ($pageRows as $row) {
         $values = cdr_export_values($row);
-        $display = [$values[0], $values[1], $values[2], $values[3], $values[4], $values[6], $values[7], $values[8]];
+        $display = [
+            $values[0], $values[1], $values[2], $values[3], $values[4],
+            $values[5], $values[7], $values[8], $values[9],
+        ];
         $x = 18;
         foreach ($columns as $columnIndex => [$label, $length, $width]) {
             $stream .= sprintf(

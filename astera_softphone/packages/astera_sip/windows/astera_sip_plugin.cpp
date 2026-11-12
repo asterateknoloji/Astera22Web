@@ -2,6 +2,9 @@
 
 #include <windows.h>
 #include <wincred.h>
+#include <mmdeviceapi.h>
+#include <functiondiscoverykeys_devpkey.h>
+#include <propvarutil.h>
 
 #include <flutter/event_channel.h>
 #include <flutter/event_stream_handler_functions.h>
@@ -10,9 +13,11 @@
 #include <flutter/standard_method_codec.h>
 
 #include <cstdint>
+#include <cwctype>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace astera_sip {
 namespace {
@@ -92,6 +97,181 @@ std::wstring Utf8ToWide(const std::string& value) {
       CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
       result.data(), size);
   return result;
+}
+
+std::string NormalizeDeviceText(const std::string& value) {
+  if (value.empty()) {
+    return {};
+  }
+  if (MultiByteToWideChar(
+          CP_UTF8,
+          MB_ERR_INVALID_CHARS,
+          value.data(),
+          static_cast<int>(value.size()),
+          nullptr,
+          0) > 0) {
+    return value;
+  }
+
+  const int wide_size = MultiByteToWideChar(
+      CP_ACP,
+      0,
+      value.data(),
+      static_cast<int>(value.size()),
+      nullptr,
+      0);
+  if (wide_size <= 0) {
+    return "Bilinmeyen ses aygiti";
+  }
+  std::wstring wide(wide_size, L'\0');
+  MultiByteToWideChar(
+      CP_ACP,
+      0,
+      value.data(),
+      static_cast<int>(value.size()),
+      wide.data(),
+      wide_size);
+  const int utf8_size = WideCharToMultiByte(
+      CP_UTF8,
+      0,
+      wide.data(),
+      wide_size,
+      nullptr,
+      0,
+      nullptr,
+      nullptr);
+  if (utf8_size <= 0) {
+    return "Bilinmeyen ses aygiti";
+  }
+  std::string utf8(utf8_size, '\0');
+  WideCharToMultiByte(
+      CP_UTF8,
+      0,
+      wide.data(),
+      wide_size,
+      utf8.data(),
+      utf8_size,
+      nullptr,
+      nullptr);
+  return utf8;
+}
+
+std::string WideToUtf8(const std::wstring& value) {
+  if (value.empty()) {
+    return {};
+  }
+  const int size = WideCharToMultiByte(
+      CP_UTF8,
+      0,
+      value.data(),
+      static_cast<int>(value.size()),
+      nullptr,
+      0,
+      nullptr,
+      nullptr);
+  if (size <= 0) {
+    return {};
+  }
+  std::string result(size, '\0');
+  WideCharToMultiByte(
+      CP_UTF8,
+      0,
+      value.data(),
+      static_cast<int>(value.size()),
+      result.data(),
+      size,
+      nullptr,
+      nullptr);
+  return result;
+}
+
+std::vector<std::wstring> WindowsAudioDeviceNames(EDataFlow flow) {
+  std::vector<std::wstring> names;
+  const HRESULT initialize_result =
+      CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const bool uninitialize =
+      initialize_result == S_OK || initialize_result == S_FALSE;
+  if (FAILED(initialize_result) &&
+      initialize_result != RPC_E_CHANGED_MODE) {
+    return names;
+  }
+
+  IMMDeviceEnumerator* enumerator = nullptr;
+  IMMDeviceCollection* collection = nullptr;
+  if (SUCCEEDED(CoCreateInstance(
+          __uuidof(MMDeviceEnumerator),
+          nullptr,
+          CLSCTX_ALL,
+          __uuidof(IMMDeviceEnumerator),
+          reinterpret_cast<void**>(&enumerator))) &&
+      SUCCEEDED(enumerator->EnumAudioEndpoints(
+          flow,
+          DEVICE_STATE_ACTIVE,
+          &collection))) {
+    UINT count = 0;
+    collection->GetCount(&count);
+    for (UINT index = 0; index < count; ++index) {
+      IMMDevice* device = nullptr;
+      IPropertyStore* properties = nullptr;
+      PROPVARIANT value;
+      PropVariantInit(&value);
+      if (SUCCEEDED(collection->Item(index, &device)) &&
+          SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties)) &&
+          SUCCEEDED(properties->GetValue(PKEY_Device_FriendlyName, &value)) &&
+          value.vt == VT_LPWSTR &&
+          value.pwszVal != nullptr) {
+        names.emplace_back(value.pwszVal);
+      }
+      PropVariantClear(&value);
+      if (properties != nullptr) {
+        properties->Release();
+      }
+      if (device != nullptr) {
+        device->Release();
+      }
+    }
+  }
+  if (collection != nullptr) {
+    collection->Release();
+  }
+  if (enumerator != nullptr) {
+    enumerator->Release();
+  }
+  if (uninitialize) {
+    CoUninitialize();
+  }
+  return names;
+}
+
+bool StartsWithIgnoringCase(const std::wstring& value,
+                            const std::wstring& prefix) {
+  if (prefix.empty() || prefix.size() > value.size()) {
+    return false;
+  }
+  for (size_t index = 0; index < prefix.size(); ++index) {
+    if (std::towlower(value[index]) != std::towlower(prefix[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string FullAudioDeviceName(
+    const AudioDevice& device,
+    const std::vector<std::wstring>& capture_names,
+    const std::vector<std::wstring>& playback_names) {
+  const std::string normalized = NormalizeDeviceText(device.name);
+  const std::wstring prefix = Utf8ToWide(normalized);
+  const auto& names =
+      device.input_channels > 0 && device.output_channels == 0
+          ? capture_names
+          : playback_names;
+  for (const auto& name : names) {
+    if (StartsWithIgnoringCase(name, prefix)) {
+      return WideToUtf8(name);
+    }
+  }
+  return normalized;
 }
 
 std::wstring CredentialTarget(const std::string& account_id) {
@@ -305,6 +485,49 @@ void AsteraSipPlugin::HandleMethodCall(
       const auto& arguments = RequireArguments(method_call);
       sip_engine_->SetSpeakerLevel(
           static_cast<float>(RequireDouble(arguments, "level")));
+      result->Success();
+    } else if (method_call.method_name() == "getAudioDevices") {
+      const auto state = sip_engine_->GetAudioDevices();
+      const auto capture_names = WindowsAudioDeviceNames(eCapture);
+      const auto playback_names = WindowsAudioDeviceNames(eRender);
+      flutter::EncodableList devices;
+      devices.reserve(state.devices.size());
+      for (const auto& device : state.devices) {
+        devices.emplace_back(flutter::EncodableMap{
+            {flutter::EncodableValue("id"),
+             flutter::EncodableValue(device.id)},
+            {flutter::EncodableValue("name"),
+             flutter::EncodableValue(FullAudioDeviceName(
+                 device, capture_names, playback_names))},
+            {flutter::EncodableValue("driver"),
+             flutter::EncodableValue(NormalizeDeviceText(device.driver))},
+            {flutter::EncodableValue("inputChannels"),
+             flutter::EncodableValue(device.input_channels)},
+            {flutter::EncodableValue("outputChannels"),
+             flutter::EncodableValue(device.output_channels)},
+        });
+      }
+      result->Success(flutter::EncodableValue(flutter::EncodableMap{
+          {flutter::EncodableValue("devices"),
+           flutter::EncodableValue(devices)},
+          {flutter::EncodableValue("captureDeviceId"),
+           flutter::EncodableValue(state.capture_device_id)},
+          {flutter::EncodableValue("playbackDeviceId"),
+           flutter::EncodableValue(state.playback_device_id)},
+      }));
+    } else if (method_call.method_name() == "setAudioDevices") {
+      const auto& arguments = RequireArguments(method_call);
+      sip_engine_->SetAudioDevices(
+          GetInt(arguments, "captureDeviceId", -1),
+          GetInt(arguments, "playbackDeviceId", -1));
+      result->Success();
+    } else if (method_call.method_name() == "setRingtoneStyle") {
+      const auto& arguments = RequireArguments(method_call);
+      sip_engine_->SetRingtoneStyle(GetInt(arguments, "style", 0));
+      result->Success();
+    } else if (method_call.method_name() == "setRingtoneFile") {
+      const auto& arguments = RequireArguments(method_call);
+      sip_engine_->SetRingtoneFile(RequireString(arguments, "path"));
       result->Success();
     } else if (method_call.method_name() == "pollEvents") {
       sip_engine_->PollEvents();

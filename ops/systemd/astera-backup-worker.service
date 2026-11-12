@@ -1,0 +1,20 @@
+[Unit]
+Description=Astera backup ve restore işçisi
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=astera-panel
+Group=astera-panel
+SupplementaryGroups=asterisk www-data
+WorkingDirectory=/var/www/astera
+ExecStart=/usr/bin/php /var/www/astera/bin/backup_worker.php
+Restart=always
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/var/backups/astera
+
+[Install]
+WantedBy=multi-user.target

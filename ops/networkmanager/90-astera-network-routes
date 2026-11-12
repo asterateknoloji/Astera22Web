@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -u
+
+action="${2:-}"
+case "$action" in
+    up|dhcp4-change|connectivity-change)
+        systemctl --no-block restart astera-network-routes.service
+        ;;
+esac
+
+exit 0

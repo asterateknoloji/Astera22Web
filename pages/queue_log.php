@@ -1,13 +1,12 @@
 <?php
-$filters = [
-    'date_from' => trim((string) ($_GET['date_from'] ?? '')),
-    'date_to' => trim((string) ($_GET['date_to'] ?? '')),
+require_once __DIR__ . '/../includes/report_period.php';
+$filters = array_merge(report_period_filters($_GET), [
     'callid' => trim((string) ($_GET['callid'] ?? '')),
     'queuename' => trim((string) ($_GET['queuename'] ?? '')),
     'agent' => trim((string) ($_GET['agent'] ?? '')),
     'event' => trim((string) ($_GET['event'] ?? '')),
     'data' => trim((string) ($_GET['data'] ?? '')),
-];
+]);
 $rows = pbx_queue_log_rows(1000, current_dept_id(), $filters);
 $dataLabels = [
     'ENTERQUEUE' => ['URL / ek bilgi', 'Arayan numara', 'Kuyruğa giriş sırası', '', ''],
@@ -33,8 +32,7 @@ $dataLabels = [
 <article class="card">
     <form method="get" class="cdr-filters">
         <input type="hidden" name="p" value="queue_log">
-        <label>Başlangıç tarihi<input type="date" name="date_from" value="<?= e($filters['date_from']) ?>"></label>
-        <label>Bitiş tarihi<input type="date" name="date_to" value="<?= e($filters['date_to']) ?>"></label>
+        <?php render_report_period_filter($filters); ?>
         <label>Unique ID<input name="callid" value="<?= e($filters['callid']) ?>" placeholder="178997..."></label>
         <label>Kuyruk<input name="queuename" value="<?= e($filters['queuename']) ?>" placeholder="120-SATIS"></label>
         <label>Temsilci<input name="agent" value="<?= e($filters['agent']) ?>" placeholder="120_1001"></label>

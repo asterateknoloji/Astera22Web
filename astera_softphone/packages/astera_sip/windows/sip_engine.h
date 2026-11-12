@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace astera_sip {
 
@@ -33,6 +34,20 @@ struct CallEvent {
   std::string detail;
 };
 
+struct AudioDevice {
+  int id = -1;
+  std::string name;
+  std::string driver;
+  int input_channels = 0;
+  int output_channels = 0;
+};
+
+struct AudioDeviceState {
+  std::vector<AudioDevice> devices;
+  int capture_device_id = -1;
+  int playback_device_id = -1;
+};
+
 class SipEngine {
  public:
   using RegistrationCallback = std::function<void(const RegistrationEvent&)>;
@@ -59,6 +74,10 @@ class SipEngine {
   void TransferCall(const std::string& destination);
   void SetMicrophoneLevel(float level);
   void SetSpeakerLevel(float level);
+  AudioDeviceState GetAudioDevices();
+  void SetAudioDevices(int capture_device_id, int playback_device_id);
+  void SetRingtoneStyle(int style);
+  void SetRingtoneFile(const std::string& path);
   void PollEvents();
   void Dispose();
 

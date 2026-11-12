@@ -1,0 +1,17 @@
+[Unit]
+Description=Astera kalıcı statik IPv4 rotaları
+After=NetworkManager-wait-online.service network-online.target postgresql.service
+Wants=NetworkManager-wait-online.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/astera-network-routes apply
+ExecReload=/usr/local/sbin/astera-network-routes reload
+ExecStop=/usr/local/sbin/astera-network-routes clear
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target

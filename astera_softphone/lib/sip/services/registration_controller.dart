@@ -37,9 +37,11 @@ class RegistrationController extends ChangeNotifier {
   bool held = false;
   bool doNotDisturb = false;
   bool autoAnswer = false;
+  int autoAnswerRingCount = 2;
   double microphoneLevel = 1;
   double speakerLevel = 1;
   bool _incomingActionHandled = false;
+  Timer? _autoAnswerTimer;
 
   Future<void> initialize() async {
     await _logger.initialize();
@@ -87,6 +89,7 @@ class RegistrationController extends ChangeNotifier {
   }
 
   Future<void> shutdown() async {
+    _cancelAutoAnswer();
     await _subscription?.cancel();
     await _callSubscription?.cancel();
     _subscription = null;
@@ -111,9 +114,20 @@ class RegistrationController extends ChangeNotifier {
   }
 
   Future<void> makeCall(String destination) => _sip.makeCall(destination);
-  Future<void> answerCall() => _sip.answerCall();
-  Future<void> rejectCall() => _sip.rejectCall();
-  Future<void> hangupCall() => _sip.hangupCall();
+  Future<void> answerCall() {
+    _cancelAutoAnswer();
+    return _sip.answerCall();
+  }
+
+  Future<void> rejectCall() {
+    _cancelAutoAnswer();
+    return _sip.rejectCall();
+  }
+
+  Future<void> hangupCall() {
+    _cancelAutoAnswer();
+    return _sip.hangupCall();
+  }
 
   Future<void> toggleMute() async {
     final next = !muted;
@@ -162,15 +176,54 @@ class RegistrationController extends ChangeNotifier {
     await _sip.setSpeakerLevel(level);
   }
 
+  Future<AudioDeviceState> getAudioDevices() => _sip.getAudioDevices();
+
+  Future<void> setAudioDevices({
+    required int captureDeviceId,
+    required int playbackDeviceId,
+  }) => _sip.setAudioDevices(
+    captureDeviceId: captureDeviceId,
+    playbackDeviceId: playbackDeviceId,
+  );
+
+  Future<void> setRingtoneStyle(int style) => _sip.setRingtoneStyle(style);
+  Future<void> setRingtoneFile(String path) => _sip.setRingtoneFile(path);
+
   void setDoNotDisturb(bool value) {
     doNotDisturb = value;
-    if (value) autoAnswer = false;
+    if (value) {
+      autoAnswer = false;
+      _cancelAutoAnswer();
+    }
     notifyListeners();
   }
 
   void setAutoAnswer(bool value) {
     autoAnswer = value;
     if (value) doNotDisturb = false;
+    if (!value) {
+      _cancelAutoAnswer();
+      if (callEvent.state == CallState.incoming) {
+        _incomingActionHandled = false;
+      }
+    } else if (callEvent.state == CallState.incoming) {
+      _scheduleAutoAnswer();
+    }
+    notifyListeners();
+  }
+
+  void setAutoAnswerRingCount(int value) {
+    autoAnswerRingCount = value.clamp(1, 10).toInt();
+    if (autoAnswer && callEvent.state == CallState.incoming) {
+      _scheduleAutoAnswer();
+    }
+    notifyListeners();
+  }
+
+  void configureAutoAnswer({required bool enabled, required int ringCount}) {
+    autoAnswer = enabled;
+    autoAnswerRingCount = ringCount.clamp(1, 10).toInt();
+    if (enabled) doNotDisturb = false;
     notifyListeners();
   }
 
@@ -182,6 +235,9 @@ class RegistrationController extends ChangeNotifier {
   }
 
   void _onCallEvent(CallEvent next) {
+    if (next.state != CallState.incoming) {
+      _cancelAutoAnswer();
+    }
     callEvent = next;
     held = next.state == CallState.held;
     if (next.state == CallState.disconnected ||
@@ -197,8 +253,7 @@ class RegistrationController extends ChangeNotifier {
         _incomingActionHandled = true;
         unawaited(_sip.rejectCall());
       } else if (autoAnswer) {
-        _incomingActionHandled = true;
-        unawaited(_sip.answerCall());
+        _scheduleAutoAnswer();
       }
     }
     unawaited(
@@ -208,6 +263,22 @@ class RegistrationController extends ChangeNotifier {
             'code=${next.statusCode} detail=${next.detail}',
       ),
     );
+  }
+
+  void _cancelAutoAnswer() {
+    _autoAnswerTimer?.cancel();
+    _autoAnswerTimer = null;
+  }
+
+  void _scheduleAutoAnswer() {
+    _cancelAutoAnswer();
+    _incomingActionHandled = true;
+    _autoAnswerTimer = Timer(Duration(seconds: autoAnswerRingCount * 4), () {
+      _autoAnswerTimer = null;
+      if (callEvent.state == CallState.incoming && autoAnswer) {
+        unawaited(_sip.answerCall());
+      }
+    });
   }
 
   void _setFailure(Object error) {

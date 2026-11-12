@@ -2,8 +2,10 @@ export 'src/call_state.dart';
 export 'src/call_event.dart';
 export 'src/registration_event.dart';
 export 'src/sip_account.dart';
+export 'src/audio_device.dart';
 
 import 'astera_sip_platform_interface.dart';
+import 'src/audio_device.dart';
 import 'src/call_event.dart';
 import 'src/registration_event.dart';
 import 'src/sip_account.dart';
@@ -49,6 +51,19 @@ class AsteraSip {
       AsteraSipPlatform.instance.setMicrophoneLevel(level);
   Future<void> setSpeakerLevel(double level) =>
       AsteraSipPlatform.instance.setSpeakerLevel(level);
+  Future<AudioDeviceState> getAudioDevices() =>
+      AsteraSipPlatform.instance.getAudioDevices();
+  Future<void> setAudioDevices({
+    required int captureDeviceId,
+    required int playbackDeviceId,
+  }) => AsteraSipPlatform.instance.setAudioDevices(
+    captureDeviceId: captureDeviceId,
+    playbackDeviceId: playbackDeviceId,
+  );
+  Future<void> setRingtoneStyle(int style) =>
+      AsteraSipPlatform.instance.setRingtoneStyle(style);
+  Future<void> setRingtoneFile(String path) =>
+      AsteraSipPlatform.instance.setRingtoneFile(path);
 
   Future<void> dispose() => AsteraSipPlatform.instance.dispose();
 }

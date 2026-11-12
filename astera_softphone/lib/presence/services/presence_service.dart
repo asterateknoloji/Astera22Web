@@ -33,13 +33,56 @@ class ExtensionPresence {
   }
 }
 
+class CrmUrlTrigger {
+  const CrmUrlTrigger({
+    required this.urlTemplate,
+    required this.trigger,
+    required this.numberFormat,
+    required this.minDigits,
+    required this.department,
+    required this.extension,
+    required this.accessToken,
+    required this.panelHost,
+  });
+
+  final String urlTemplate;
+  final String trigger;
+  final String numberFormat;
+  final int minDigits;
+  final String department;
+  final String extension;
+  final String accessToken;
+  final String panelHost;
+
+  factory CrmUrlTrigger.fromJson(
+    Map<String, dynamic> json, {
+    required String panelHost,
+  }) {
+    return CrmUrlTrigger(
+      urlTemplate: json['url_template'] as String? ?? '',
+      trigger: json['trigger'] as String? ?? 'ring',
+      numberFormat: json['number_format'] as String? ?? 'digits',
+      minDigits: (json['min_digits'] as num?)?.toInt() ?? 7,
+      department: json['department'] as String? ?? '',
+      extension: json['extension'] as String? ?? '',
+      accessToken: json['access_token'] as String? ?? '',
+      panelHost: panelHost,
+    );
+  }
+}
+
 class PresenceService {
+  CrmUrlTrigger? lastUrlTrigger;
+
   Future<List<ExtensionPresence>> fetch({
     required String apiUrl,
     required String sipUser,
     required String authUser,
     required String password,
   }) async {
+    // URL tetikleme yetkisi her istekte santralden yeniden alınır. Bir önceki
+    // hesabın/isteğin CRM ayarı hata halinde kesinlikle kullanılmamalıdır.
+    lastUrlTrigger = null;
     if (apiUrl.isEmpty) {
       throw StateError('Meşguliyet API URL gerekli.');
     }
@@ -54,6 +97,7 @@ class PresenceService {
       queryParameters: {
         ...baseUri.queryParameters,
         'sip_user': sipUser,
+        '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
       },
     );
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
@@ -66,6 +110,7 @@ class PresenceService {
         HttpHeaders.authorizationHeader,
         'Basic $credentials',
       );
+      request.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
       final response = await request.close().timeout(
         const Duration(seconds: 15),
       );
@@ -77,12 +122,21 @@ class PresenceService {
           uri: uri,
         );
       }
+      final trigger = json['url_trigger'];
+      lastUrlTrigger = trigger is Map<String, dynamic>
+          ? CrmUrlTrigger.fromJson(trigger, panelHost: baseUri.host)
+          : null;
+      if (json['presence_ok'] == false) {
+        throw HttpException(
+          json['presence_error'] as String? ??
+              'AMI meşguliyet bilgisi alınamadı.',
+          uri: uri,
+        );
+      }
       final extensions = json['extensions'] as List<dynamic>? ?? const [];
       return extensions
           .map(
-            (item) => ExtensionPresence.fromJson(
-              item as Map<String, dynamic>,
-            ),
+            (item) => ExtensionPresence.fromJson(item as Map<String, dynamic>),
           )
           .where((item) => item.extension.isNotEmpty)
           .toList();

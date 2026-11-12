@@ -1,0 +1,2282 @@
+#!/usr/bin/env bash
+# ASTERA PBX migration installer
+#
+# Run on the NEW Ubuntu PBX only:
+#   sudo bash install_new_pbx.sh
+#   sudo bash install_new_pbx.sh --activate
+#
+# The source PBX is read-only during this process. The script only runs
+# inspection commands, pg_dump/pg_dumpall and rsync reads on 192.168.181.74.
+
+if [ -z "${BASH_VERSION:-}" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    fi
+    echo "Bu kurulum betigi Bash gerektirir; bash paketi bulunamadi." >&2
+    exit 1
+fi
+
+set -Eeuo pipefail
+umask 027
+ORIGINAL_ARGS=("$@")
+
+SOURCE_HOST="${SOURCE_HOST:-192.168.181.74}"
+TARGET_HOST="${TARGET_HOST:-192.168.181.87}"
+PROVISION_NETWORK="${PROVISION_NETWORK:-${TARGET_HOST%.*}.0/24}"
+SOURCE_SSH_USER="${SOURCE_SSH_USER:-root}"
+SOURCE_SSH_PORT="${SOURCE_SSH_PORT:-22}"
+SOURCE_SSH_KEY="${SOURCE_SSH_KEY:-}"
+SOURCE_APP_DIR="${SOURCE_APP_DIR:-/var/www/astera}"
+TARGET_APP_DIR="${TARGET_APP_DIR:-/var/www/astera}"
+DB_NAME="${DB_NAME:-asterisk}"
+SOURCE_PANEL_DOMAIN="${SOURCE_PANEL_DOMAIN:-santral.astera.com.tr}"
+CUSTOMER_NAME="${CUSTOMER_NAME:-}"
+PBX_NAME="${PBX_NAME:-}"
+PANEL_DOMAIN="${PANEL_DOMAIN:-}"
+PBX_HOSTNAME="${PBX_HOSTNAME:-}"
+ALERT_EMAIL="teknik@asterateknoloji.com.tr"
+SSH_ALERT_EMAIL="tuncay@asterateknoloji.com.tr"
+ALARM_EMAILS="tuncay@asterateknoloji.com.tr,teknik@asterateknoloji.com.tr"
+MAIL_TEST_CONFIRMED="${MAIL_TEST_CONFIRMED:-}"
+ASTERISK_SERIES="${ASTERISK_SERIES:-22}"
+ASTERISK_BUILD_JOBS="${ASTERISK_BUILD_JOBS:-2}"
+POSTGRESQL_MAJOR="${POSTGRESQL_MAJOR:-18}"
+ACTIVATE=0
+FORCE=0
+ASSUME_YES=0
+LOG_FILE="/var/log/astera-pbx-install.log"
+STATE_DIR="/var/lib/astera-installer"
+WORK_DIR=""
+
+usage() {
+    cat <<'USAGE'
+Kullanim:
+  sudo bash install_new_pbx.sh [secenekler]
+
+Secenekler:
+  --customer-name ADI  Musteri / firma adini belirler.
+  --pbx-name ADI       PBX kisa adini belirler (ornek: pbx001).
+  --hostname ADI       Sunucu hostname degerini belirler (ornek: ASTERA-PBX001).
+  --activate   Kurulum sonunda Asterisk'i baslatir. Eski santral devredeyken
+               kullanmak ayni trunk'in iki kez kayit olmasina neden olabilir.
+  --force      Hedefte bulunan uygulama/veritabani verisini yedekleyip uzerine
+               geri yuklemeye izin verir.
+  --yes        Etkilesimli hedef IP onayini atlar.
+  -h, --help   Bu yardimi gosterir.
+
+Istege bagli ortam degiskenleri:
+  SOURCE_SSH_KEY=/root/.ssh/id_ed25519
+  SOURCE_SSH_PASSWORD='...'        (anahtar yoksa; komut satirina yazmayin)
+  SOURCE_APP_DIR=/var/www/astera
+  SOURCE_PANEL_DOMAIN=santral.astera.com.tr
+  CUSTOMER_NAME='Musteri Firma Adi' (girilmezse başlangıçta sorulur)
+  PBX_NAME=pbx002                   (pbx002.asterapbx.net oluşturur)
+  PBX_HOSTNAME=ASTERA-PBX002        (girilmezse PBX_NAME'den oluşturulur)
+  PANEL_DOMAIN=pbx002.example.com   (PBX_NAME yerine kullanılabilir)
+  MAIL_TEST_CONFIRMED=yes           (yalnızca e-posta teslimi önceden doğrulandıysa)
+  Alarm bildirimleri otomatik olarak tuncay@asterateknoloji.com.tr ve
+  teknik@asterateknoloji.com.tr adreslerine gönderilir.
+  LETSENCRYPT_EMAIL=admin@example.com
+  CLOUDFLARE_API_TOKEN='...'        (komut geçmişine yazmak yerine export edin)
+  SOURCE_HOST=192.168.181.74 TARGET_HOST=192.168.181.87
+
+Onerilen guvenli ilk calisma:
+  sudo PBX_NAME=pbx002 SOURCE_SSH_KEY=/root/.ssh/id_ed25519 \
+    bash install_new_pbx.sh
+
+Kesin gecis sirasinda:
+  1. Eski santralde yeni cagri olusmasini durdurun.
+  2. Betigi --force --activate ile yeniden calistirin. SSL, WebRTC ve root SSH
+     ayarlari bu adimda otomatik tamamlanir.
+  3. Operator/DNS/NAT yonunu yeni IP'ye cevirin.
+USAGE
+}
+
+while (($#)); do
+    case "$1" in
+        --customer-name)
+            (($# >= 2)) || { echo "--customer-name icin bir deger zorunludur." >&2; exit 2; }
+            CUSTOMER_NAME="$2"
+            shift
+            ;;
+        --pbx-name)
+            (($# >= 2)) || { echo "--pbx-name icin bir deger zorunludur." >&2; exit 2; }
+            PBX_NAME="$2"
+            shift
+            ;;
+        --hostname)
+            (($# >= 2)) || { echo "--hostname icin bir deger zorunludur." >&2; exit 2; }
+            PBX_HOSTNAME="$2"
+            shift
+            ;;
+        --activate) ACTIVATE=1 ;;
+        --force) FORCE=1 ;;
+        --yes) ASSUME_YES=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Bilinmeyen secenek: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Bu betik yeni Ubuntu santralde root olarak calistirilmalidir." >&2
+    exit 1
+fi
+
+if [[ ! -r /etc/os-release ]]; then
+    echo "Desteklenen Ubuntu sistemi algilanamadi." >&2
+    exit 1
+fi
+# shellcheck disable=SC1091
+source /etc/os-release
+if [[ "${ID:-}" != "ubuntu" ]]; then
+    echo "Bu betik Ubuntu icin hazirlanmistir; algilanan: ${ID:-bilinmiyor}" >&2
+    exit 1
+fi
+
+if [[ -t 0 ]]; then
+    if [[ -z "$CUSTOMER_NAME" ]]; then
+        read -r -p "Musteri / firma adi: " CUSTOMER_NAME
+    fi
+    if [[ -z "$PBX_NAME" && -z "$PANEL_DOMAIN" ]]; then
+        read -r -p "PBX kisa adi (ornek: pbx002): " PBX_NAME
+    fi
+fi
+if [[ -z "$PANEL_DOMAIN" && -n "$PBX_NAME" ]]; then
+    PANEL_DOMAIN="${PBX_NAME,,}.asterapbx.net"
+fi
+hostname_seed="${PBX_NAME:-${PANEL_DOMAIN%%.*}}"
+hostname_seed="${hostname_seed^^}"
+hostname_seed="${hostname_seed//[^A-Z0-9-]/-}"
+default_pbx_hostname="ASTERA-${hostname_seed:-PBX}"
+if [[ -z "$PBX_HOSTNAME" && -t 0 ]]; then
+    read -r -p "Sunucu hostname [$default_pbx_hostname]: " PBX_HOSTNAME
+fi
+PBX_HOSTNAME="${PBX_HOSTNAME:-$default_pbx_hostname}"
+
+mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR"
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
+die() { printf '\nHATA: %s\n' "$*" >&2; exit 1; }
+cleanup() {
+    local code=$?
+    if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+        rm -rf "$WORK_DIR"
+    fi
+    if ((code != 0)); then
+        printf '\nKurulum tamamlanamadi (kod %d). Gunluk: %s\n' "$code" "$LOG_FILE" >&2
+    fi
+}
+trap cleanup EXIT
+trap 'die "Satir $LINENO calistirilamadi: $BASH_COMMAND"' ERR
+
+valid_ipv4() {
+    local ip=$1 part
+    [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS=. read -r -a parts <<<"$ip"
+    for part in "${parts[@]}"; do
+        ((10#$part <= 255)) || return 1
+    done
+}
+valid_ipv4 "$SOURCE_HOST" || die "Gecersiz kaynak IP: $SOURCE_HOST"
+valid_ipv4 "$TARGET_HOST" || die "Gecersiz hedef IP: $TARGET_HOST"
+[[ "$SOURCE_HOST" != "$TARGET_HOST" ]] || die "Kaynak ve hedef IP ayni olamaz."
+[[ "$DB_NAME" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || die "Gecersiz veritabani adi."
+[[ "$SOURCE_PANEL_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+    || die "Geçersiz SOURCE_PANEL_DOMAIN."
+[[ -n "$CUSTOMER_NAME" && ${#CUSTOMER_NAME} -le 120 && "$CUSTOMER_NAME" != *$'\n'* && "$CUSTOMER_NAME" != *$'\r'* ]] \
+    || die "Musteri adi zorunludur ve en fazla 120 karakter olabilir."
+[[ "$PBX_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] \
+    || die "Gecersiz hostname. Ornek: ASTERA-PBX01"
+[[ "$PANEL_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] \
+    || die "PBX_NAME veya geçerli PANEL_DOMAIN zorunludur."
+[[ "$SOURCE_APP_DIR" == /* && "$TARGET_APP_DIR" == /* ]] || die "Uygulama yollari mutlak olmalidir."
+[[ "$ASTERISK_BUILD_JOBS" =~ ^[1-8]$ ]] \
+    || die "ASTERISK_BUILD_JOBS 1 ile 8 arasinda olmalidir."
+[[ "$POSTGRESQL_MAJOR" =~ ^(14|15|16|17|18)$ ]] \
+    || die "POSTGRESQL_MAJOR 14-18 araliginda olmalidir."
+
+if ! ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$TARGET_HOST"; then
+    die "Bu makinede hedef IP ($TARGET_HOST) bulunamadi. Betigi yalnizca yeni santralde calistirin."
+fi
+
+if ((ASSUME_YES == 0)); then
+    echo
+    echo "Kaynak (yalnizca okunacak): $SOURCE_SSH_USER@$SOURCE_HOST"
+    echo "Hedef (kurulum yapilacak):   $TARGET_HOST"
+    echo "Musteri:                     $CUSTOMER_NAME"
+    echo "Sunucu hostname:             $PBX_HOSTNAME"
+    echo "Bildirim e-postasi:          $ALERT_EMAIL"
+    echo "Uygulama:                    $SOURCE_APP_DIR -> $TARGET_APP_DIR"
+    echo "Veritabani:                  $DB_NAME"
+    ((ACTIVATE == 1)) && echo "UYARI: --activate verildi; yeni Asterisk trunk kayitlarini baslatabilir."
+    read -r -p "Devam etmek icin hedef IP'yi yazin ($TARGET_HOST): " confirmation
+    [[ "$confirmation" == "$TARGET_HOST" ]] || die "Onay eslesmedi; hicbir degisiklik yapilmadi."
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+
+log "Hostname ve saat dilimi ayarlaniyor"
+hostnamectl set-hostname "$PBX_HOSTNAME"
+hosts_temp="$(mktemp /etc/.hosts.XXXXXX)"
+awk -v hostname="$PBX_HOSTNAME" '
+    BEGIN { found = 0 }
+    $1 == "127.0.1.1" {
+        if (!found) {
+            print "127.0.1.1\t" hostname
+            found = 1
+        }
+        next
+    }
+    { print }
+    END {
+        if (!found) print "127.0.1.1\t" hostname
+    }
+' /etc/hosts >"$hosts_temp"
+chmod --reference=/etc/hosts "$hosts_temp"
+chown --reference=/etc/hosts "$hosts_temp"
+mv "$hosts_temp" /etc/hosts
+timedatectl set-timezone Europe/Istanbul
+
+log "Temel paketler kuruluyor"
+
+# A previous PostgreSQL repository entry may exist without its signing key.
+# Disable only PGDG entries before the bootstrap apt update; they are recreated
+# below with an explicit signed-by key.
+PGDG_SOURCE_BACKUP_DIR="/etc/apt/sources.list.d/astera-pgdg-backup-$(date +%Y%m%d-%H%M%S)"
+install -d -m 0755 "$PGDG_SOURCE_BACKUP_DIR"
+shopt -s nullglob
+for source_file in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -f "$source_file" ]] || continue
+    grep -Fq 'apt.postgresql.org' "$source_file" || continue
+    mv "$source_file" "$PGDG_SOURCE_BACKUP_DIR/$(basename "$source_file")"
+done
+shopt -u nullglob
+if [[ -f /etc/apt/sources.list ]] && grep -Fq 'apt.postgresql.org' /etc/apt/sources.list; then
+    cp -a /etc/apt/sources.list "$PGDG_SOURCE_BACKUP_DIR/sources.list"
+    sed -i '\|apt.postgresql.org|s|^|# disabled-by-astera: |' /etc/apt/sources.list
+fi
+
+apt-get update
+log "Yarim kalmis dpkg islemleri ve paket bagimliliklari onariliyor"
+dpkg --configure -a
+apt-get --fix-broken install -y
+log "Ubuntu sistem guncellemeleri kuruluyor"
+apt-get upgrade -y
+apt-get install -y --no-install-recommends ca-certificates curl gnupg
+install -d -m 0755 /usr/share/keyrings
+curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    | gpg --dearmor --yes -o /usr/share/keyrings/postgresql-pgdg.gpg
+chmod 0644 /usr/share/keyrings/postgresql-pgdg.gpg
+cat >/etc/apt/sources.list.d/pgdg.list <<EOF
+deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main
+EOF
+apt-get update
+
+log "Hedefteki mevcut PostgreSQL paketleri ve bos/yarim cluster temizleniyor"
+mapfile -t installed_postgresql_packages < <(
+    dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'postgresql*' 2>/dev/null \
+        | awk '$2 ~ /^ii/ { print $1 }' \
+        | sort -u
+)
+if ((${#installed_postgresql_packages[@]} > 0)); then
+    systemctl stop postgresql 2>/dev/null || true
+    apt-get purge -y "${installed_postgresql_packages[@]}"
+    apt-get autoremove -y --purge
+fi
+rm -rf /etc/postgresql /var/lib/postgresql
+
+log "PostgreSQL ${POSTGRESQL_MAJOR} kuruluyor"
+printf '%s\n' \
+    "postfix postfix/mailname string $PANEL_DOMAIN" \
+    "postfix postfix/main_mailer_type select Internet Site" \
+    | debconf-set-selections
+apt-get install -y --no-install-recommends \
+    ca-certificates curl wget gnupg lsb-release openssl rsync openssh-client openssh-server sshpass \
+    build-essential pkg-config git subversion patch \
+    libedit-dev libjansson-dev libxml2-dev libxslt1-dev libsqlite3-dev uuid-dev \
+    libssl-dev libncurses5-dev libnewt-dev libcurl4-openssl-dev \
+    libspeex-dev libspeexdsp-dev libogg-dev libvorbis-dev libgsm1-dev \
+    libopus-dev libsrtp2-dev libspandsp-dev libical-dev libneon27-dev \
+    unixodbc unixodbc-dev odbc-postgresql libpq-dev \
+    "postgresql-${POSTGRESQL_MAJOR}" "postgresql-client-${POSTGRESQL_MAJOR}" \
+    nginx certbot python3 python3-certbot-nginx ufw fail2ban ipset network-manager postfix mailutils systemd-timesyncd \
+    iproute2 net-tools iputils-ping dnsutils ethtool traceroute mtr-tiny mc glances sngrep \
+    php-fpm php-cli php-pgsql php-mbstring php-curl php-xml php-zip php-intl php-gd
+
+log "NetworkManager metin arayuzu (nmtui) kontrol ediliyor"
+if ! command -v nmtui >/dev/null 2>&1; then
+    if apt-cache show network-manager-tui >/dev/null 2>&1; then
+        apt-get install -y --no-install-recommends network-manager-tui
+    fi
+fi
+command -v nmtui >/dev/null 2>&1 || die "nmtui kurulamadi."
+command -v mc >/dev/null 2>&1 || die "mc kurulamadi."
+command -v glances >/dev/null 2>&1 || die "glances kurulamadi."
+command -v sngrep >/dev/null 2>&1 || die "sngrep kurulamadi."
+
+log "PostgreSQL ${POSTGRESQL_MAJOR}/main cluster hazirlaniyor"
+# Some hardened Ubuntu images remove traversal permission from /var/log.
+# PostgreSQL needs to traverse it to reach its private postgresql directory.
+chmod o+x /var/log
+install -d -o postgres -g adm -m 1775 /var/log/postgresql
+install -d -o postgres -g postgres -m 2775 /run/postgresql
+if ! pg_lsclusters --no-header 2>/dev/null \
+    | awk -v version="$POSTGRESQL_MAJOR" '$1 == version && $2 == "main" { found=1 } END { exit !found }'; then
+    pg_createcluster "$POSTGRESQL_MAJOR" main
+fi
+postgresql_log="/var/log/postgresql/postgresql-${POSTGRESQL_MAJOR}-main.log"
+touch "$postgresql_log"
+chown postgres:adm "$postgresql_log"
+chmod 0640 "$postgresql_log"
+systemctl enable postgresql.service
+if ! pg_ctlcluster "$POSTGRESQL_MAJOR" main status >/dev/null 2>&1; then
+    pg_ctlcluster "$POSTGRESQL_MAJOR" main start
+fi
+postgresql_ready=0
+for _ in {1..30}; do
+    if sudo -u postgres pg_isready -q -d postgres; then
+        postgresql_ready=1
+        break
+    fi
+    sleep 1
+done
+((postgresql_ready == 1)) \
+    || die "PostgreSQL ${POSTGRESQL_MAJOR}/main 30 saniye icinde hazir olmadi."
+
+log "Postfix, test e-postasi ve root SSH giris bildirimi hazirlaniyor"
+printf '%s\n' "$PANEL_DOMAIN" >/etc/mailname
+postconf -e "myhostname = $PANEL_DOMAIN"
+postconf -e 'myorigin = /etc/mailname'
+postconf -e 'inet_interfaces = loopback-only'
+postconf -e 'mydestination = $myhostname, localhost.$mydomain, localhost'
+systemctl enable --now postfix.service
+printf 'Astera PBX Ubuntu mail testi\nMusteri: %s\nSunucu: %s\nTarih/Saat: %s\n' \
+    "$CUSTOMER_NAME" "$PBX_HOSTNAME" "$(date '+%Y-%m-%d %H:%M:%S %Z')" \
+    | timeout 20s /usr/bin/mail \
+        -s "TEST - $PBX_HOSTNAME - $CUSTOMER_NAME" "$ALERT_EMAIL"
+touch "$STATE_DIR/mail-test-submitted"
+chmod 600 "$STATE_DIR/mail-test-submitted"
+mail_test_confirmed=0
+if [[ "$MAIL_TEST_CONFIRMED" != "yes" ]]; then
+    if [[ -t 0 ]]; then
+        read -r -p "Test e-postasi $ALERT_EMAIL adresine ulasti mi? [e/H]: " mail_answer
+        if [[ "${mail_answer,,}" == "e" || "${mail_answer,,}" == "evet" ]]; then
+            mail_test_confirmed=1
+        else
+            log "UYARI: E-posta teslimi dogrulanmadi; kurulum devam ediyor"
+        fi
+    else
+        log "UYARI: E-posta teslimi etkilesimsiz kurulumda dogrulanamadi; kurulum devam ediyor"
+    fi
+else
+    mail_test_confirmed=1
+fi
+if ((mail_test_confirmed == 1)); then
+    touch "$STATE_DIR/mail-test-confirmed"
+    rm -f "$STATE_DIR/mail-test-unconfirmed"
+else
+    touch "$STATE_DIR/mail-test-unconfirmed"
+    rm -f "$STATE_DIR/mail-test-confirmed"
+fi
+chmod 600 "$STATE_DIR"/mail-test-{confirmed,unconfirmed} 2>/dev/null || true
+
+install -d -m 0750 -o root -g root /etc/astera
+{
+    printf 'CUSTOMER_NAME=%q\n' "${CUSTOMER_NAME:-ASTERA}"
+    printf 'ALERT_EMAIL=%q\n' "$SSH_ALERT_EMAIL"
+} >/etc/astera/ssh-alert.conf
+chmod 0600 /etc/astera/ssh-alert.conf
+cat >/usr/local/sbin/root-ssh-alert.sh <<'ROOT_SSH_ALERT'
+#!/usr/bin/env bash
+set -u
+
+[[ "${PAM_TYPE:-}" == "open_session" ]] || exit 0
+[[ "${PAM_USER:-}" == "root" ]] || exit 0
+
+ip="${PAM_RHOST:-}"
+[[ "$ip" != "127.0.0.1" && "$ip" != "::1" ]] || exit 0
+
+customer="ASTERA"
+recipient="teknik@asterateknoloji.com.tr"
+if [[ -r /etc/astera/ssh-alert.conf ]]; then
+    # shellcheck disable=SC1091
+    source /etc/astera/ssh-alert.conf
+    customer="${CUSTOMER_NAME:-$customer}"
+    recipient="${ALERT_EMAIL:-$recipient}"
+fi
+server="$(hostname)"
+
+if ! {
+    printf 'Root SSH girisi algilandi\n'
+    printf 'Musteri: %s\n' "$customer"
+    printf 'Sunucu: %s\n' "$server"
+    printf 'Tarih/Saat: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'Kullanici: root\n'
+    printf 'Kaynak IP: %s\n' "${ip:-bilinmiyor}"
+} | timeout 20s /usr/bin/mail \
+    -r root@astera.com.tr \
+    -s "Alert: $customer Root Access - ${ip:-bilinmiyor}" "$recipient"; then
+    logger -t astera-root-ssh-alert "Root SSH bildirim e-postasi gonderilemedi: ${ip:-bilinmiyor}"
+fi
+exit 0
+ROOT_SSH_ALERT
+chown root:root /usr/local/sbin/root-ssh-alert.sh
+chmod 0700 /usr/local/sbin/root-ssh-alert.sh
+if ! grep -Fq 'pam_exec.so /usr/local/sbin/root-ssh-alert.sh' /etc/pam.d/sshd; then
+    printf '\nsession optional pam_exec.so /usr/local/sbin/root-ssh-alert.sh\n' >>/etc/pam.d/sshd
+fi
+
+log "Webmin resmi deposu ve paketi kuruluyor"
+WEBMIN_REPO_SCRIPT="$(mktemp /var/tmp/webmin-setup-repo.XXXXXX.sh)"
+curl -fsSL --retry 3 \
+    https://raw.githubusercontent.com/webmin/webmin/master/webmin-setup-repo.sh \
+    -o "$WEBMIN_REPO_SCRIPT"
+webmin_repo_ready=0
+if sh "$WEBMIN_REPO_SCRIPT" --force --stable; then
+    webmin_repo_ready=1
+else
+    log "Webmin deposu kurulamadi; resmi GitHub surum paketi kullanilacak"
+fi
+rm -f "$WEBMIN_REPO_SCRIPT"
+
+webmin_installed=0
+if ((webmin_repo_ready == 1)); then
+    if apt-get update && apt-get install -y --install-recommends webmin; then
+        webmin_installed=1
+    else
+        log "Webmin deposundan paket kurulumu basarisiz; GitHub paketi denenecek"
+    fi
+fi
+
+if ((webmin_installed == 0)); then
+    # A failed repository setup can leave an unusable source behind. It must
+    # not break later apt operations while download.webmin.com TLS is faulty.
+    rm -f \
+        /etc/apt/sources.list.d/webmin.list \
+        /etc/apt/sources.list.d/webmin-stable.list \
+        /etc/apt/sources.list.d/webmin-stable.sources
+
+    WEBMIN_RELEASE_JSON="$(mktemp /var/tmp/webmin-release.XXXXXX.json)"
+    WEBMIN_DEB_FILE="$(mktemp /var/tmp/webmin.XXXXXX.deb)"
+    webmin_download_ok=0
+    if curl -fsSL --retry 3 \
+        https://api.github.com/repos/webmin/webmin/releases/latest \
+        -o "$WEBMIN_RELEASE_JSON"; then
+        WEBMIN_ASSET="$(
+            python3 - "$WEBMIN_RELEASE_JSON" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as release_file:
+    release = json.load(release_file)
+for asset in release.get("assets", []):
+    if re.fullmatch(r"webmin_[0-9.]+_all\.deb", str(asset.get("name", ""))):
+        print(asset.get("browser_download_url", ""))
+        print(asset.get("digest", ""))
+        break
+PY
+        )" || WEBMIN_ASSET=''
+        WEBMIN_DEB_URL="$(printf '%s\n' "$WEBMIN_ASSET" | sed -n '1p')"
+        WEBMIN_DEB_DIGEST="$(printf '%s\n' "$WEBMIN_ASSET" | sed -n '2p')"
+        if [[ "$WEBMIN_DEB_URL" == https://github.com/webmin/webmin/releases/download/*/*_all.deb ]] \
+            && curl -fL --retry 3 "$WEBMIN_DEB_URL" -o "$WEBMIN_DEB_FILE"; then
+            if [[ "$WEBMIN_DEB_DIGEST" =~ ^sha256:([0-9a-fA-F]{64})$ ]]; then
+                printf '%s  %s\n' "${BASH_REMATCH[1],,}" "$WEBMIN_DEB_FILE" | sha256sum -c -
+            fi
+            if apt-get install -y --install-recommends "$WEBMIN_DEB_FILE"; then
+                webmin_download_ok=1
+                webmin_installed=1
+            fi
+        fi
+    fi
+    rm -f "$WEBMIN_RELEASE_JSON" "$WEBMIN_DEB_FILE"
+    if ((webmin_download_ok == 0)); then
+        log "UYARI: Webmin indirilemedi; PBX kurulumu Webmin olmadan devam edecek"
+    fi
+fi
+
+if ((webmin_installed == 1)); then
+    systemctl enable --now webmin
+fi
+
+log "Ethernet kartlari NetworkManager yonetimine aliniyor"
+install -d -m 0755 /etc/netplan
+target_interface="$(
+    ip -o -4 address show scope global \
+        | awk -v target="$TARGET_HOST" '$4 ~ ("^" target "/") {print $2; exit}'
+)"
+[[ -n "$target_interface" ]] || die "Hedef IP'nin Ethernet arayuzu bulunamadi: $TARGET_HOST"
+target_cidr="$(
+    ip -o -4 address show dev "$target_interface" scope global \
+        | awk -v target="$TARGET_HOST" '$4 ~ ("^" target "/") {print $4; exit}'
+)"
+[[ -n "$target_cidr" ]] || die "Hedef IP CIDR bilgisi bulunamadi: $TARGET_HOST"
+netplan_backup="/root/astera-netplan-backup-$(date +%Y%m%d-%H%M%S)"
+install -d -m 0700 "$netplan_backup"
+shopt -s nullglob
+netplan_files=(/etc/netplan/*.yaml /etc/netplan/*.yml)
+((${#netplan_files[@]} == 0)) || cp -a "${netplan_files[@]}" "$netplan_backup/"
+rm -f /etc/netplan/*.yaml /etc/netplan/*.yml
+shopt -u nullglob
+cat >/etc/netplan/01-astera-static.yaml <<'NETPLAN'
+network:
+  version: 2
+  renderer: NetworkManager
+NETPLAN
+mapfile -t live_interfaces < <(
+    for interface_path in /sys/class/net/*; do
+        interface="${interface_path##*/}"
+        [[ -e "$interface_path/device" ]] || continue
+        ip -o -4 address show dev "$interface" scope global | grep -q . \
+            && printf '%s\n' "$interface"
+    done | sort -u
+)
+printf '  ethernets:\n' >>/etc/netplan/01-astera-static.yaml
+for interface in "${live_interfaces[@]}"; do
+    [[ "$interface" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,30}$ ]] \
+        || die "Gecersiz Ethernet arayuzu: $interface"
+    if [[ "$interface" == "$target_interface" ]]; then
+        interface_cidr="$target_cidr"
+    else
+        interface_cidr="$(ip -o -4 address show dev "$interface" scope global | awk 'NR==1 {print $4}')"
+    fi
+    [[ -n "$interface_cidr" ]] || continue
+    interface_gateway="$(ip -4 route show default dev "$interface" | awk 'NR==1 {print $3}')"
+    interface_dns="$(
+        resolvectl dns "$interface" 2>/dev/null \
+            | awk -F': ' 'NF > 1 {print $2}' \
+            | tr ' ' '\n' \
+            | awk '/^[0-9]{1,3}(\.[0-9]{1,3}){3}$/' \
+            | paste -sd, - \
+            || true
+    )"
+    [[ -n "$interface_dns" ]] \
+        || interface_dns="$(awk '/^nameserver [0-9]/{print $2}' /etc/resolv.conf | paste -sd, - || true)"
+    {
+        printf '    %s:\n' "$interface"
+        printf '      dhcp4: false\n'
+        printf '      addresses: [%s]\n' "$interface_cidr"
+        if [[ -n "$interface_gateway" ]]; then
+            printf '      routes:\n'
+            printf '        - to: default\n'
+            printf '          via: %s\n' "$interface_gateway"
+        fi
+        if [[ -n "$interface_dns" ]]; then
+            printf '      nameservers:\n'
+            printf '        addresses: [%s]\n' "$interface_dns"
+        fi
+    } >>/etc/netplan/01-astera-static.yaml
+done
+chmod 0600 /etc/netplan/01-astera-static.yaml
+netplan generate
+systemctl enable NetworkManager
+systemctl disable systemd-networkd.service systemd-networkd.socket \
+    systemd-networkd-wait-online.service 2>/dev/null || true
+if systemctl is-active --quiet NetworkManager; then
+    log "NetworkManager zaten etkin; mevcut SSH baglantisini korumak icin yeniden baslatilmadi"
+else
+    log "NetworkManager sonraki yeniden baslatmada etkinlesecek; canli SSH baglantisinda netplan apply calistirilmadi"
+fi
+
+log "Hedef SSH servisi hazirlaniyor"
+install -d -m 0755 /run/sshd /etc/ssh/sshd_config.d
+if [[ -f /etc/ssh/ssh_config ]]; then
+    cp -a /etc/ssh/ssh_config \
+        "$STATE_DIR/ssh_config.client-before-cleanup-$(date +%Y%m%d-%H%M%S)"
+    sed -i -E \
+        -e '/^[[:space:]]*PermitRootLogin([[:space:]]|$)/Id' \
+        -e '/^[[:space:]]*Pas?swordAuthentication([[:space:]]|$)/Id' \
+        /etc/ssh/ssh_config
+fi
+ssh -G 127.0.0.1 >/dev/null
+cat >/etc/ssh/sshd_config.d/99-astera-root.conf <<'SSHD_CONFIG'
+PermitRootLogin yes
+PasswordAuthentication yes
+UsePAM yes
+SSHD_CONFIG
+chmod 0644 /etc/ssh/sshd_config.d/99-astera-root.conf
+sshd -t
+systemctl enable --now ssh
+
+SSH_OPTIONS=(
+    -F /dev/null
+    -p "$SOURCE_SSH_PORT"
+    -o ConnectTimeout=10
+    -o ServerAliveInterval=15
+    -o ServerAliveCountMax=4
+    -o "UserKnownHostsFile=$STATE_DIR/source_known_hosts"
+    -o StrictHostKeyChecking=accept-new
+)
+touch "$STATE_DIR/source_known_hosts"
+chmod 600 "$STATE_DIR/source_known_hosts"
+SSH_USES_PASSWORD=0
+if [[ -n "$SOURCE_SSH_KEY" ]]; then
+    [[ -r "$SOURCE_SSH_KEY" ]] || die "SSH anahtari okunamiyor: $SOURCE_SSH_KEY"
+    SSH_OPTIONS+=(-i "$SOURCE_SSH_KEY" -o BatchMode=yes)
+    SSH_PREFIX=()
+elif [[ -n "${SOURCE_SSH_PASSWORD:-}" ]]; then
+    export SSHPASS="$SOURCE_SSH_PASSWORD"
+    SSH_PREFIX=(sshpass -e)
+    SSH_OPTIONS+=(
+        -o BatchMode=no
+        -o NumberOfPasswordPrompts=1
+        -o PreferredAuthentications=password
+        -o PubkeyAuthentication=no
+        -o KbdInteractiveAuthentication=no
+    )
+    SSH_USES_PASSWORD=1
+elif [[ -t 0 ]]; then
+    read -r -s -p "$SOURCE_SSH_USER@$SOURCE_HOST SSH parolasi: " SSHPASS
+    echo
+    export SSHPASS
+    SSH_PREFIX=(sshpass -e)
+    SSH_OPTIONS+=(
+        -o BatchMode=no
+        -o NumberOfPasswordPrompts=1
+        -o PreferredAuthentications=password
+        -o PubkeyAuthentication=no
+        -o KbdInteractiveAuthentication=no
+    )
+    SSH_USES_PASSWORD=1
+else
+    die "SOURCE_SSH_KEY veya SOURCE_SSH_PASSWORD gereklidir."
+fi
+
+remote() {
+    "${SSH_PREFIX[@]}" ssh "${SSH_OPTIONS[@]}" \
+        "$SOURCE_SSH_USER@$SOURCE_HOST" "$@"
+}
+remote_stream() {
+    "${SSH_PREFIX[@]}" ssh "${SSH_OPTIONS[@]}" \
+        "$SOURCE_SSH_USER@$SOURCE_HOST" "$@"
+}
+pull_dir() {
+    local source_path=$1 target_path=$2
+    mkdir -p "$target_path"
+    "${SSH_PREFIX[@]}" rsync -aHAX --numeric-ids --info=stats2 \
+        -e "ssh $(printf '%q ' "${SSH_OPTIONS[@]}")" \
+        "$SOURCE_SSH_USER@$SOURCE_HOST:$source_path/" "$target_path/"
+}
+pull_file_if_exists() {
+    local source_path=$1 target_path=$2
+    if remote "test -f $(printf '%q' "$source_path")"; then
+        mkdir -p "$(dirname "$target_path")"
+        "${SSH_PREFIX[@]}" rsync -a --numeric-ids \
+            -e "ssh $(printf '%q ' "${SSH_OPTIONS[@]}")" \
+            "$SOURCE_SSH_USER@$SOURCE_HOST:$source_path" "$target_path"
+    fi
+}
+
+ssh_error=''
+if ! ssh_error="$(remote "true" 2>&1)"; then
+    printf 'SSH baglanti ayrintisi: %s\n' "${ssh_error:-bilinmeyen hata}" >&2
+    if ((SSH_USES_PASSWORD == 0)) || [[ ! -t 0 ]]; then
+        die "Kaynak SSH baglantisi reddedildi. Kullanici, anahtar ve SSH ayarlarini kontrol edin."
+    fi
+    ssh_verified=0
+    for attempt in 2 3; do
+        read -r -s -p \
+            "SSH dogrulanamadi. Parolayi tekrar girin ($attempt/3): " SSHPASS
+        echo
+        export SSHPASS
+        if ssh_error="$(remote "true" 2>&1)"; then
+            ssh_verified=1
+            break
+        fi
+        printf 'SSH baglanti ayrintisi: %s\n' "${ssh_error:-bilinmeyen hata}" >&2
+    done
+    ((ssh_verified == 1)) \
+        || die "Kaynak SSH kimlik dogrulamasi 3 denemede basarisiz oldu."
+fi
+
+log "Kaynak santral salt-okunur on kontrolden geciriliyor"
+remote "set -e
+    test -d $(printf '%q' "$SOURCE_APP_DIR")
+    test -d /etc/asterisk
+    command -v asterisk >/dev/null
+    command -v pg_dump >/dev/null
+    command -v rsync >/dev/null
+    sudo -n -u postgres pg_dump --version >/dev/null
+    sudo -n -u postgres psql -Atqc \"SELECT 1 FROM pg_database WHERE datname='$(printf '%s' "$DB_NAME" | sed "s/'/''/g")'\" | grep -qx 1
+    for helper in backup_restore_root.sh backup_dump_root.sh backup_files_root.sh \
+        network_routes_root.sh pjsip_health_root.sh system_update_root.sh \
+        system_power_root.sh fail2ban_root.sh fail2ban_mail_root.sh geoip_root.sh; do
+        test -f $(printf '%q' "$SOURCE_APP_DIR")/bin/\$helper \
+            || { printf 'Eksik kaynak yardimci dosya: %s\\n' \"\$helper\" >&2; exit 1; }
+    done
+    test -f $(printf '%q' "$SOURCE_APP_DIR")/ops/asterisk/app_queue_announce_startdelay.patch \
+        || { printf 'Eksik Asterisk kuyruk yamasi\\n' >&2; exit 1; }
+    grep -Fq 'core waitfullybooted' \
+        $(printf '%q' "$SOURCE_APP_DIR")/configure_webrtc.sh \
+        || { printf 'Kaynak WebRTC tam acilis kontrolu eski\\n' >&2; exit 1; }
+    printf 'Kaynak hostname: '; hostname
+    asterisk -rx 'core show version' 2>/dev/null | sed -n '1p'
+    printf 'Kaynak uygulama: '; readlink -f $(printf '%q' "$SOURCE_APP_DIR")"
+
+SELF_PATH="$(readlink -f "$0")"
+SOURCE_INSTALLER="$(mktemp /tmp/astera-installer-current.XXXXXX)"
+remote "cat $(printf '%q' "$SOURCE_APP_DIR")/install_new_pbx.sh" >"$SOURCE_INSTALLER"
+[[ -s "$SOURCE_INSTALLER" ]] || die "Kaynak kurulum betigi okunamadi."
+bash -n "$SOURCE_INSTALLER"
+if ! cmp -s "$SOURCE_INSTALLER" "$SELF_PATH"; then
+    log "Kurulum betiginin yeni surumu bulundu; devam etmeden once yenileniyor"
+    install -m 0750 -o root -g root "$SOURCE_INSTALLER" "$SELF_PATH"
+    rm -f "$SOURCE_INSTALLER"
+    export CUSTOMER_NAME PBX_NAME PANEL_DOMAIN PBX_HOSTNAME
+    trap - EXIT ERR
+    exec bash "$SELF_PATH" "${ORIGINAL_ARGS[@]}"
+fi
+rm -f "$SOURCE_INSTALLER"
+
+WORK_DIR="$(mktemp -d /var/tmp/astera-install.XXXXXX)"
+BACKUP_DIR="/root/astera-target-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+
+if [[ -f "$STATE_DIR/completed" && $FORCE -ne 1 ]]; then
+    die "Bu hedef daha once kurulmus. Yeniden veri almak icin --force kullanin."
+fi
+if [[ -d "$TARGET_APP_DIR" && -n "$(ls -A "$TARGET_APP_DIR" 2>/dev/null)" ]]; then
+    ((FORCE == 1)) || die "$TARGET_APP_DIR bos degil. Uzerine yazmak icin --force kullanin."
+    log "Hedef uygulama yedekleniyor: $BACKUP_DIR"
+    cp -a "$TARGET_APP_DIR" "$BACKUP_DIR/application"
+fi
+
+log "Asterisk $ASTERISK_SERIES kuruluyor"
+QUEUE_ANNOUNCE_PATCH="$WORK_DIR/app_queue_announce_startdelay.patch"
+remote "cat $(printf '%q' "$SOURCE_APP_DIR")/ops/asterisk/app_queue_announce_startdelay.patch" \
+    >"$QUEUE_ANNOUNCE_PATCH"
+[[ -s "$QUEUE_ANNOUNCE_PATCH" ]] || die "Asterisk kuyruk yamasi okunamadi."
+ASTERISK_MODULE_FILE="$(find /usr/lib /usr/lib64 /usr/local/lib \
+    -type f -path '*/asterisk/modules/res_pjsip.so' -print -quit 2>/dev/null || true)"
+if ! command -v asterisk >/dev/null 2>&1 \
+    || ! asterisk -V 2>/dev/null | grep -Eq "^Asterisk ${ASTERISK_SERIES}([. -]|$)" \
+    || [[ -z "$ASTERISK_MODULE_FILE" ]] \
+    || [[ ! -r "$(dirname "$ASTERISK_MODULE_FILE")/res_http_websocket.so" ]] \
+    || [[ ! -r "$(dirname "$ASTERISK_MODULE_FILE")/res_pjsip_transport_websocket.so" ]] \
+    || ! strings "$(dirname "$ASTERISK_MODULE_FILE")/app_queue.so" \
+        | grep -Fq 'announce-position-startdelay'; then
+    AST_TARBALL="$WORK_DIR/asterisk.tar.gz"
+    curl -fL --retry 3 \
+        "https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTERISK_SERIES}-current.tar.gz" \
+        -o "$AST_TARBALL"
+    mkdir -p "$WORK_DIR/asterisk-src"
+    tar -xzf "$AST_TARBALL" --strip-components=1 -C "$WORK_DIR/asterisk-src"
+    pushd "$WORK_DIR/asterisk-src" >/dev/null
+    patch -p1 --forward <"$QUEUE_ANNOUNCE_PATCH"
+    ./configure --with-jansson-bundled
+    make menuselect.makeopts
+    menuselect/menuselect \
+        --enable res_http_websocket \
+        --enable chan_pjsip \
+        --enable res_pjsip_transport_websocket \
+        --enable res_odbc \
+        --enable cdr_adaptive_odbc \
+        menuselect.makeopts
+    make -j"$ASTERISK_BUILD_JOBS"
+    make install
+    make samples
+    make config
+    ldconfig
+    popd >/dev/null
+fi
+ASTERISK_MODULE_FILE="$(find /usr/lib /usr/lib64 /usr/local/lib \
+    -type f -path '*/asterisk/modules/res_pjsip.so' -print -quit 2>/dev/null || true)"
+[[ -n "$ASTERISK_MODULE_FILE" ]] || die "Asterisk res_pjsip modulu kurulamadi."
+ASTERISK_MODULE_DIR="$(dirname "$ASTERISK_MODULE_FILE")"
+for required_module in \
+    res_pjsip.so chan_pjsip.so res_http_websocket.so \
+    res_pjsip_transport_websocket.so; do
+    [[ -r "$ASTERISK_MODULE_DIR/$required_module" ]] \
+        || die "Asterisk modulu derlenemedi: $required_module"
+done
+
+getent group asterisk >/dev/null || groupadd --system asterisk
+id asterisk >/dev/null 2>&1 || useradd --system --gid asterisk \
+    --home-dir /var/lib/asterisk --shell /usr/sbin/nologin asterisk
+chown -R root:asterisk "$ASTERISK_MODULE_DIR"
+chmod 0755 "$(dirname "$ASTERISK_MODULE_DIR")" "$ASTERISK_MODULE_DIR"
+find "$ASTERISK_MODULE_DIR" -type d -exec chmod 0755 {} +
+find "$ASTERISK_MODULE_DIR" -type f -name '*.so' -exec chmod 0644 {} +
+getent group astera-panel >/dev/null || groupadd --system astera-panel
+id astera-panel >/dev/null 2>&1 || useradd --system --gid astera-panel \
+    --home-dir "$TARGET_APP_DIR" --shell /usr/sbin/nologin astera-panel
+
+systemctl stop asterisk.service 2>/dev/null || true
+systemctl stop astera-url-trigger.service 2>/dev/null || true
+
+log "Asterisk yapilandirmasi ve calisma verileri aliniyor"
+[[ -d /etc/asterisk ]] && cp -a /etc/asterisk "$BACKUP_DIR/asterisk-config-before-copy"
+rm -rf /etc/asterisk
+mkdir -p /etc/asterisk
+pull_dir /etc/asterisk /etc/asterisk
+pull_dir /var/lib/asterisk /var/lib/asterisk
+pull_dir /var/spool/asterisk /var/spool/asterisk
+pull_dir /var/log/asterisk /var/log/asterisk
+pull_file_if_exists /etc/odbc.ini /etc/odbc.ini
+pull_file_if_exists /etc/odbcinst.ini /etc/odbcinst.ini
+
+log "Varsayilan bekleme muzigi Fur Elise olarak sabitleniyor"
+DEFAULT_MOH_DIR="/var/lib/asterisk/moh"
+DEFAULT_MOH_FILE="$DEFAULT_MOH_DIR/wav_Fur_Elise.wav"
+[[ -s "$DEFAULT_MOH_FILE" ]] \
+    || die "Varsayilan bekleme muzigi kaynak santralden alinamadi: $DEFAULT_MOH_FILE"
+DEFAULT_MOH_BACKUP="$BACKUP_DIR/default-moh-replaced"
+install -d -m 0700 "$DEFAULT_MOH_BACKUP"
+while IFS= read -r -d '' moh_file; do
+    mv "$moh_file" "$DEFAULT_MOH_BACKUP/"
+done < <(
+    find "$DEFAULT_MOH_DIR" -maxdepth 1 -type f \
+        ! -name 'wav_Fur_Elise.wav' \
+        \( -iname '*.wav' -o -iname '*.sln' -o -iname '*.sln16' \
+           -o -iname '*.ulaw' -o -iname '*.alaw' -o -iname '*.gsm' \
+           -o -iname '*.mp3' -o -iname '*.ogg' -o -iname '*.opus' \) \
+        -print0
+)
+chown asterisk:asterisk "$DEFAULT_MOH_DIR" "$DEFAULT_MOH_FILE"
+chmod 0644 "$DEFAULT_MOH_FILE"
+
+if grep -Eq '^[[:space:]]*astmoddir[[:space:]]*=>' /etc/asterisk/asterisk.conf; then
+    sed -i -E \
+        "s#^[[:space:]]*astmoddir[[:space:]]*=>.*#astmoddir => $ASTERISK_MODULE_DIR#" \
+        /etc/asterisk/asterisk.conf
+else
+    sed -i "/^\[directories\]/a astmoddir => $ASTERISK_MODULE_DIR" \
+        /etc/asterisk/asterisk.conf
+fi
+
+log "Web uygulamasi aliniyor"
+mkdir -p "$TARGET_APP_DIR"
+pull_dir "$SOURCE_APP_DIR" "$TARGET_APP_DIR"
+
+log "Yeni panel icin durum sorgusu ve istek onbellegi duzenleniyor"
+python3 - \
+    "$TARGET_APP_DIR/api.php" \
+    "$TARGET_APP_DIR/assets/js/app.js" \
+    "$TARGET_APP_DIR/includes/store.php" \
+    "$TARGET_APP_DIR/includes/pbx_repository.php" <<'PY'
+from pathlib import Path
+import sys
+
+api_path = Path(sys.argv[1])
+app_path = Path(sys.argv[2])
+store_path = Path(sys.argv[3])
+repository_path = Path(sys.argv[4])
+
+api = api_path.read_text(encoding="utf-8")
+old_status = """        case 'status':
+            $status = pbx_status(current_dept_id());
+            $status['pending_count'] = store_pending_count();
+            json_out(['ok' => true, 'status' => $status]);
+"""
+new_status = """        case 'status':
+            $statusDeptId = current_dept_id();
+            $pendingCount = store_pending_count();
+            if (session_status() === PHP_SESSION_ACTIVE) {
+                session_write_close();
+            }
+            $status = pbx_status($statusDeptId);
+            $status['pending_count'] = $pendingCount;
+            json_out(['ok' => true, 'status' => $status]);
+"""
+if old_status in api:
+    api_path.write_text(api.replace(old_status, new_status, 1), encoding="utf-8")
+elif new_status not in api:
+    raise SystemExit("api.php durum sorgusu beklenen bicimde degil; guvenli duzenleme yapilamadi")
+
+app = app_path.read_text(encoding="utf-8")
+old_poll = "setInterval(() => this.refreshStatus(), 5000);"
+new_poll = "setInterval(() => this.refreshStatus(), 30000);"
+if old_poll in app:
+    app_path.write_text(app.replace(old_poll, new_poll, 1), encoding="utf-8")
+elif new_poll not in app:
+    raise SystemExit("app.js durum sorgusu araligi bulunamadi")
+
+store = store_path.read_text(encoding="utf-8")
+cache_helpers = """function &store_request_cache(): array
+{
+    static $cache = [];
+    return $cache;
+}
+
+function store_cache_forget(?string $name = null): void
+{
+    $cache =& store_request_cache();
+    if ($name === null) {
+        $cache = [];
+        return;
+    }
+    unset($cache[$name]);
+}
+
+"""
+read_start = """function store_read(string $name): array
+{
+    store_validate_name($name);
+"""
+cached_read_start = """function store_read(string $name): array
+{
+    store_validate_name($name);
+    $cache =& store_request_cache();
+    if (array_key_exists($name, $cache)) {
+        return $cache[$name];
+    }
+"""
+if "function &store_request_cache(): array" not in store:
+    if read_start not in store:
+        raise SystemExit("store.php okuma fonksiyonu beklenen bicimde degil")
+    store = store.replace(read_start, cache_helpers + cached_read_start, 1)
+    store = store.replace(
+        "        return pbx_relational_read($name);",
+        "        return $cache[$name] = pbx_relational_read($name);",
+        1,
+    )
+    store = store.replace(
+        """    if (!is_file($file)) {
+        return [];
+    }
+    $raw = file_get_contents($file);
+    $data = json_decode((string) $raw, true);
+    return is_array($data) ? $data : [];
+}""",
+        """    if (!is_file($file)) {
+        return $cache[$name] = [];
+    }
+    $raw = file_get_contents($file);
+    $data = json_decode((string) $raw, true);
+    return $cache[$name] = (is_array($data) ? $data : []);
+}""",
+        1,
+    )
+    store = store.replace(
+        """function store_write(string $name, array $data): void
+{
+    store_validate_name($name);""",
+        """function store_write(string $name, array $data): void
+{
+    store_validate_name($name);
+    store_cache_forget($name);""",
+        1,
+    )
+    store = store.replace(
+        """function store_local_write(string $name, array $data): void
+{""",
+        """function store_local_write(string $name, array $data): void
+{
+    store_cache_forget($name);""",
+        1,
+    )
+    store_path.write_text(store, encoding="utf-8")
+
+repository = repository_path.read_text(encoding="utf-8")
+repository_start = """function pbx_relational_json_rows(string $sql): array
+{
+"""
+pdo_repository_start = """function pbx_relational_json_rows(string $sql): array
+{
+    if (PHP_OS_FAMILY !== 'Windows' && extension_loaded('pdo_pgsql')) {
+        static $pdo = null;
+        if (!$pdo instanceof PDO) {
+            $pdo = new PDO(
+                'pgsql:dbname=' . PBX_DB_NAME,
+                null,
+                null,
+                [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_PERSISTENT => true,
+                ]
+            );
+        }
+        $rows = $pdo->query($sql)->fetchAll();
+        return is_array($rows) ? $rows : [];
+    }
+"""
+if "PDO::ATTR_PERSISTENT => true" not in repository:
+    if repository_start not in repository:
+        raise SystemExit("pbx_repository.php sorgu fonksiyonu beklenen bicimde degil")
+    repository_path.write_text(
+        repository.replace(repository_start, pdo_repository_start, 1),
+        encoding="utf-8",
+    )
+PY
+
+log "PostgreSQL veritabani salt-okunur akis ile aliniyor"
+remote_stream "sudo -n -u postgres pg_dumpall --roles-only" >"$WORK_DIR/roles.sql"
+remote_stream "sudo -n -u postgres pg_dump --format=plain --no-owner --no-acl $(printf '%q' "$DB_NAME")" \
+    >"$WORK_DIR/database.sql"
+[[ -s "$WORK_DIR/database.sql" ]] || die "Kaynak veritabani yedegi bos."
+# mktemp creates its directory as root-only. PostgreSQL must be able to
+# traverse the directory and read both streamed backup files during restore.
+chgrp postgres "$WORK_DIR" "$WORK_DIR/roles.sql" "$WORK_DIR/database.sql"
+chmod 0750 "$WORK_DIR"
+chmod 0640 "$WORK_DIR/roles.sql" "$WORK_DIR/database.sql"
+
+log "NTP ve PostgreSQL saat ayarlari yapiliyor"
+if ! systemctl list-unit-files systemd-timesyncd.service --no-legend 2>/dev/null \
+    | grep -Fq 'systemd-timesyncd.service'; then
+    apt-get install -y systemd-timesyncd
+fi
+install -d -m 0755 -o root -g root /etc/systemd/timesyncd.conf.d
+cat >/etc/systemd/timesyncd.conf.d/astera.conf <<'NTP'
+[Time]
+NTP=tr.pool.ntp.org pool.ntp.org time.cloudflare.com
+FallbackNTP=ntp.ubuntu.com time.cloudflare.com
+NTP
+chmod 0644 /etc/systemd/timesyncd.conf.d/astera.conf
+timedatectl set-ntp true
+systemctl enable --now systemd-timesyncd.service
+systemctl restart systemd-timesyncd.service
+systemctl enable --now postgresql
+cd /tmp
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres \
+    -c "ALTER SYSTEM SET timezone = 'Europe/Istanbul';"
+systemctl restart postgresql
+[[ "$(sudo -u postgres psql -d postgres -Atqc 'SHOW timezone')" == "Europe/Istanbul" ]] \
+    || die "PostgreSQL saat dilimi Europe/Istanbul olarak ayarlanamadi."
+
+if sudo -u postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='$(printf '%s' "$DB_NAME" | sed "s/'/''/g")'" | grep -qx 1; then
+    existing_tables="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")"
+    if [[ "$existing_tables" != "0" ]]; then
+        ((FORCE == 1)) || die "Hedef $DB_NAME veritabani dolu. Yenilemek icin --force kullanin."
+        sudo -u postgres pg_dump -Fc "$DB_NAME" >"$BACKUP_DIR/database-before-restore.dump"
+    fi
+    sudo -u postgres dropdb --force "$DB_NAME"
+fi
+
+# The roles dump retains source role password hashes and grants. Existing
+# PostgreSQL built-in roles can safely produce duplicate-role notices.
+sudo -u postgres psql -v ON_ERROR_STOP=0 -f "$WORK_DIR/roles.sql" postgres
+if ! sudo -u postgres psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='asterisk'" | grep -qx 1; then
+    sudo -u postgres createuser asterisk
+fi
+if ! sudo -u postgres psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname='astera-panel'" | grep -qx 1; then
+    sudo -u postgres createuser "astera-panel"
+fi
+sudo -u postgres createdb --owner=asterisk "$DB_NAME"
+sudo -u postgres psql -v ON_ERROR_STOP=1 --dbname="$DB_NAME" \
+    --file="$WORK_DIR/database.sql"
+PRI_MIGRATION="$TARGET_APP_DIR/migrations/011_pri_spans.sql"
+[[ -s "$PRI_MIGRATION" ]] || die "PRI migration dosyasi bulunamadi: $PRI_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PRI_MIGRATION"
+OUTBOUND_PERMISSION_MIGRATION="$TARGET_APP_DIR/migrations/022_extension_outbound_permissions.sql"
+[[ -s "$OUTBOUND_PERMISSION_MIGRATION" ]] \
+    || die "Abone dis arama yetkisi migration dosyasi bulunamadi: $OUTBOUND_PERMISSION_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$OUTBOUND_PERMISSION_MIGRATION"
+CRM_DEFAULT_MIGRATION="$TARGET_APP_DIR/migrations/023_extension_crm_default_disabled.sql"
+[[ -s "$CRM_DEFAULT_MIGRATION" ]] \
+    || die "Abone CRM varsayilan migration dosyasi bulunamadi: $CRM_DEFAULT_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$CRM_DEFAULT_MIGRATION"
+PANEL_CONFIG_WRITE_MIGRATION="$TARGET_APP_DIR/migrations/024_panel_pbx_config_write.sql"
+[[ -s "$PANEL_CONFIG_WRITE_MIGRATION" ]] \
+    || die "Panel PBX yazma yetkisi migration dosyasi bulunamadi: $PANEL_CONFIG_WRITE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PANEL_CONFIG_WRITE_MIGRATION"
+NETWORK_SETTINGS_MIGRATION="$TARGET_APP_DIR/migrations/025_network_interface_settings.sql"
+[[ -s "$NETWORK_SETTINGS_MIGRATION" ]] \
+    || die "Ethernet ayarlari migration dosyasi bulunamadi: $NETWORK_SETTINGS_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$NETWORK_SETTINGS_MIGRATION"
+
+log "Hedef makinenin Ethernet bilgileri veritabanina isleniyor"
+mapfile -t TARGET_NETWORK_INTERFACES < <(
+    for interface_path in /sys/class/net/*; do
+        interface="${interface_path##*/}"
+        [[ -e "$interface_path/device" ]] || continue
+        ip -o -4 address show dev "$interface" scope global | grep -q . \
+            && printf '%s\n' "$interface"
+    done | sort -u
+)
+for interface in "${TARGET_NETWORK_INTERFACES[@]}"; do
+    [[ "$interface" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,30}$ ]] \
+        || die "Gecersiz hedef Ethernet arayuzu: $interface"
+    ipv4_cidr="$(ip -o -4 address show dev "$interface" scope global | awk 'NR==1 {print $4}')"
+    gateway="$(ip -4 route show default dev "$interface" | awk 'NR==1 {print $3}')"
+    mtu="$(cat "/sys/class/net/$interface/mtu")"
+    connection_uuid="$(nmcli -g GENERAL.CON-UUID device show "$interface" 2>/dev/null | head -n1 || true)"
+    dns_servers="$(
+        resolvectl dns "$interface" 2>/dev/null \
+            | awk -F': ' 'NF > 1 {print $2}' \
+            | tr ' ' '\n' \
+            | awk '/^[0-9]{1,3}(\.[0-9]{1,3}){3}$/' \
+            | paste -sd, - \
+            || true
+    )"
+    method="manual"
+    ip -o -4 address show dev "$interface" scope global | grep -qw dynamic \
+        && method="dhcp"
+    dept_id="$(
+        sudo -u postgres psql -d "$DB_NAME" -Atqc \
+            "SELECT COALESCE(
+                (SELECT dept_id FROM network_interface_settings
+                 WHERE interface_name = '$(printf '%s' "$interface" | sed "s/'/''/g")' LIMIT 1),
+                (SELECT dept_id FROM astera_tenants ORDER BY dept_id LIMIT 1)
+            )"
+    )"
+    [[ -n "$dept_id" ]] || die "Ethernet ayari icin firma bulunamadi: $interface"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+        -v interface_name="$interface" \
+        -v dept_id="$dept_id" \
+        -v method="$method" \
+        -v ipv4_cidr="$ipv4_cidr" \
+        -v gateway="$gateway" \
+        -v dns_servers="$dns_servers" \
+        -v mtu="$mtu" \
+        -v connection_uuid="$connection_uuid" <<'SQL'
+INSERT INTO network_interface_settings (
+    interface_name, dept_id, method, ipv4_cidr, gateway, dns_servers, mtu,
+    connection_uuid, rollback_unit, backup_connection, confirmed,
+    applied_at, updated_at, updated_by
+) VALUES (
+    :'interface_name', :'dept_id', :'method',
+    NULLIF(:'ipv4_cidr', '')::inet,
+    NULLIF(:'gateway', '')::inet,
+    CASE WHEN :'dns_servers' = '' THEN ARRAY[]::inet[]
+         ELSE string_to_array(:'dns_servers', ',')::inet[] END,
+    :'mtu'::integer, :'connection_uuid', '', '', TRUE, now(), now(),
+    'installer-target-network'
+)
+ON CONFLICT (interface_name) DO UPDATE SET
+    method = EXCLUDED.method,
+    ipv4_cidr = EXCLUDED.ipv4_cidr,
+    gateway = EXCLUDED.gateway,
+    dns_servers = EXCLUDED.dns_servers,
+    mtu = EXCLUDED.mtu,
+    connection_uuid = EXCLUDED.connection_uuid,
+    rollback_unit = '',
+    backup_connection = '',
+    confirmed = TRUE,
+    applied_at = now(),
+    updated_at = now(),
+    updated_by = EXCLUDED.updated_by;
+SQL
+done
+network_interface_names="$(IFS=,; printf '%s' "${TARGET_NETWORK_INTERFACES[*]}")"
+[[ -n "$network_interface_names" ]] || die "Hedef makinede IPv4 Ethernet arayuzu bulunamadi."
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    -v interface_names="$network_interface_names" <<'SQL'
+DELETE FROM network_interface_settings
+WHERE NOT (interface_name = ANY (string_to_array(:'interface_names', ',')));
+SQL
+
+PANEL_OPERATIONAL_WRITE_MIGRATION="$TARGET_APP_DIR/migrations/026_panel_operational_write_permissions.sql"
+[[ -s "$PANEL_OPERATIONAL_WRITE_MIGRATION" ]] \
+    || die "Panel operasyonel yazma yetkisi migration dosyasi bulunamadi: $PANEL_OPERATIONAL_WRITE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$PANEL_OPERATIONAL_WRITE_MIGRATION"
+AUTOPROVISION_MIGRATION="$TARGET_APP_DIR/migrations/027_autoprovision_devices.sql"
+[[ -s "$AUTOPROVISION_MIGRATION" ]] \
+    || die "Autoprovision migration dosyasi bulunamadi: $AUTOPROVISION_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_MIGRATION"
+AUTOPROVISION_ACCOUNT_SLOT_MIGRATION="$TARGET_APP_DIR/migrations/028_autoprovision_account_slot.sql"
+[[ -s "$AUTOPROVISION_ACCOUNT_SLOT_MIGRATION" ]] \
+    || die "Autoprovision hesap yuvasi migration dosyasi bulunamadi: $AUTOPROVISION_ACCOUNT_SLOT_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_ACCOUNT_SLOT_MIGRATION"
+AUTOPROVISION_TEMPLATE_MIGRATION="$TARGET_APP_DIR/migrations/029_autoprovision_templates_and_keys.sql"
+[[ -s "$AUTOPROVISION_TEMPLATE_MIGRATION" ]] \
+    || die "Autoprovision sablon ve tus migration dosyasi bulunamadi: $AUTOPROVISION_TEMPLATE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_TEMPLATE_MIGRATION"
+AUTOPROVISION_SCHEDULE_MIGRATION="$TARGET_APP_DIR/migrations/030_autoprovision_schedule.sql"
+[[ -s "$AUTOPROVISION_SCHEDULE_MIGRATION" ]] \
+    || die "Autoprovision zamanlama migration dosyasi bulunamadi: $AUTOPROVISION_SCHEDULE_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$AUTOPROVISION_SCHEDULE_MIGRATION"
+CALLCENTER_MIGRATION="$TARGET_APP_DIR/migrations/012_callcenter_core.sql"
+[[ -s "$CALLCENTER_MIGRATION" ]] \
+    || die "Callcenter migration dosyasi bulunamadi: $CALLCENTER_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$CALLCENTER_MIGRATION"
+CALLCENTER_ADMIN_MIGRATION="$TARGET_APP_DIR/migrations/013_callcenter_default_admin.sql"
+[[ -s "$CALLCENTER_ADMIN_MIGRATION" ]] \
+    || die "Callcenter admin migration dosyasi bulunamadi: $CALLCENTER_ADMIN_MIGRATION"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$CALLCENTER_ADMIN_MIGRATION"
+LICENSING_MIGRATION="$TARGET_APP_DIR/migrations/052_licensing.sql"
+[[ -s "$LICENSING_MIGRATION" ]] \
+    || die "Lisanslama migration dosyasi bulunamadi: $LICENSING_MIGRATION"
+log "Lisans tablolari ve panel yazma yetkileri zorunlu olarak uygulanıyor"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$LICENSING_MIGRATION"
+for migration in \
+    014_callcenter_permissions.sql \
+    015_callcenter_audit_logs.sql \
+    016_agent_detail_recording_permissions.sql \
+    017_callcenter_surveys.sql \
+    018_callcenter_system_settings.sql \
+    019_callcenter_legacy_survey_import.sql \
+    020_callcenter_survey_call_unique.sql \
+    021_callcenter_agent_phone_mode.sql \
+    031_callcenter_alarms.sql \
+    032_integrations_fidelio_fias.sql \
+    033_integration_remote_syslog.sql \
+    034_system_backups.sql \
+    035_network_static_routes.sql \
+    036_pbx_default_turkish_language.sql \
+    037_ivr_internal_numbers.sql \
+    038_ringgroup_internal_numbers.sql \
+    039_system_ntp_settings.sql \
+    040_system_backup_schedule.sql \
+    041_feature_takeover_settings.sql \
+    042_ami_managers.sql \
+    043_extension_qualify_default.sql \
+    044_network_interface_display_name.sql \
+    045_feature_code_settings.sql \
+    046_extension_pickup_groups.sql \
+    047_cdr_report_indexes.sql \
+    048_queue_missed_call_notifications.sql \
+    049_queue_missed_call_report_index.sql \
+    050_queue_notification_templates.sql \
+    051_trunk_alarm_defaults.sql \
+    054_callcenter_optional_password_change.sql \
+    055_ringgroup_licensing.sql; do
+    migration_path="$TARGET_APP_DIR/migrations/$migration"
+    [[ -s "$migration_path" ]] || die "Migration dosyasi bulunamadi: $migration_path"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <"$migration_path"
+done
+log "Alarm e-posta ayarlari ve alicilari hazirlaniyor"
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    -v alarm_emails="$ALARM_EMAILS" <<'SQL'
+INSERT INTO callcenter_alarm_smtp_settings (
+    dept_id,
+    enabled,
+    smtp_host,
+    smtp_port,
+    encryption,
+    username,
+    password_encrypted,
+    from_email,
+    from_name,
+    timeout_seconds
+)
+SELECT
+    dept_id,
+    TRUE,
+    '127.0.0.1',
+    25,
+    'none',
+    '',
+    '',
+    'alarm@asterateknoloji.com.tr',
+    'Astera Santral ve Callcenter',
+    15
+FROM astera_tenants
+ON CONFLICT (dept_id) DO UPDATE
+SET enabled = TRUE,
+    smtp_host = EXCLUDED.smtp_host,
+    smtp_port = EXCLUDED.smtp_port,
+    encryption = EXCLUDED.encryption,
+    username = EXCLUDED.username,
+    password_encrypted = EXCLUDED.password_encrypted,
+    from_email = EXCLUDED.from_email,
+    from_name = EXCLUDED.from_name,
+    timeout_seconds = EXCLUDED.timeout_seconds,
+    updated_at = now();
+
+INSERT INTO callcenter_alarm_recipients (dept_id, email, display_name, active)
+SELECT
+    tenant.dept_id,
+    lower(btrim(recipient.email)),
+    'Astera teknik bildirim',
+    TRUE
+FROM astera_tenants AS tenant
+CROSS JOIN LATERAL regexp_split_to_table(
+    :'alarm_emails',
+    '[[:space:],;]+'
+) AS recipient(email)
+WHERE btrim(recipient.email) <> ''
+ON CONFLICT (dept_id, email) DO UPDATE
+SET active = TRUE,
+    display_name = EXCLUDED.display_name,
+    updated_at = now();
+SQL
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<SQL
+GRANT CONNECT ON DATABASE "$DB_NAME" TO asterisk;
+GRANT USAGE ON SCHEMA public TO asterisk;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO asterisk;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO asterisk;
+GRANT CONNECT ON DATABASE "$DB_NAME" TO "astera-panel";
+GRANT USAGE ON SCHEMA public TO "astera-panel";
+GRANT SELECT ON astera_tenants, pbx_config_entities, pbx_config_values,
+    crm_customers, crm_customer_phones, softphone_crm_tokens,
+    pbx_custom_contexts, pbx_custom_context_steps,
+    cdr, queue_log,
+    callcenter_agents, callcenter_agent_queue_assignments, callcenter_break_types,
+    callcenter_breaks, callcenter_agent_sessions, callcenter_supervisor_users,
+    callcenter_supervisor_queue_scopes, callcenter_supervisor_tenant_scopes,
+    autoprovision_devices, autoprovision_templates,
+    autoprovision_device_keys, autoprovision_settings
+    TO "astera-panel";
+GRANT INSERT, UPDATE, DELETE ON callcenter_agents, callcenter_agent_queue_assignments,
+    callcenter_break_types, callcenter_breaks, callcenter_agent_sessions,
+    callcenter_supervisor_users, callcenter_supervisor_queue_scopes,
+    callcenter_supervisor_tenant_scopes,
+    autoprovision_devices, autoprovision_templates,
+    autoprovision_device_keys, autoprovision_settings TO "astera-panel";
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    license_installations, license_signed_documents, license_entitlements,
+    license_audit_events, license_usage_snapshots
+    TO "astera-panel";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "astera-panel";
+GRANT UPDATE (last_used_at, updated_at) ON softphone_crm_tokens TO "astera-panel";
+SQL
+
+log "CDR yazici gorunumu ve Asterisk ODBC hedefi hazirlaniyor"
+CDR_WRITER_MIGRATION="$TARGET_APP_DIR/migrations/010_cdr_asterisk_writer.sql"
+CDR_ADAPTIVE_CONF="/etc/asterisk/cdr_adaptive_odbc.conf"
+CDR_CONF="/etc/asterisk/cdr.conf"
+[[ -s "$CDR_WRITER_MIGRATION" ]] \
+    || die "CDR yazici migration dosyasi bulunamadi: $CDR_WRITER_MIGRATION"
+[[ -f "$CDR_ADAPTIVE_CONF" ]] \
+    || die "Asterisk Adaptive ODBC yapilandirmasi bulunamadi: $CDR_ADAPTIVE_CONF"
+[[ -f "$CDR_CONF" ]] \
+    || die "Asterisk CDR yapilandirmasi bulunamadi: $CDR_CONF"
+
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    <"$CDR_WRITER_MIGRATION"
+
+if grep -Eq '^[[:space:]]*usegmtime[[:space:]]*=' "$CDR_CONF"; then
+    sed -i -E \
+        's/^[[:space:]]*usegmtime[[:space:]]*=.*/usegmtime=no/' \
+        "$CDR_CONF"
+else
+    sed -i '/^\[general\]/a usegmtime=no' "$CDR_CONF"
+fi
+
+python3 - "$CDR_ADAPTIVE_CONF" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+section = next(
+    (index for index, line in enumerate(lines) if re.match(r"^\s*\[[^]]+\]\s*$", line)),
+    None,
+)
+if section is None:
+    raise SystemExit("Adaptive ODBC yapilandirmasinda baglanti bolumu bulunamadi")
+
+table_indexes = [
+    index for index, line in enumerate(lines)
+    if re.match(r"^\s*table\s*=", line)
+]
+if table_indexes:
+    lines[table_indexes[0]] = "table=cdr_asterisk_writer"
+    for index in reversed(table_indexes[1:]):
+        del lines[index]
+    table_index = table_indexes[0]
+else:
+    table_index = section + 1
+    lines.insert(table_index, "table=cdr_asterisk_writer")
+
+alias_pattern = re.compile(r"^\s*alias\s+end\s*=>\s*call_end\s*$")
+if not any(alias_pattern.match(line) for line in lines):
+    lines.insert(table_index + 1, "alias end => call_end")
+
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+chown asterisk:asterisk "$CDR_ADAPTIVE_CONF"
+chmod 0640 "$CDR_ADAPTIVE_CONF"
+
+if [[ "$SOURCE_PANEL_DOMAIN" != "$PANEL_DOMAIN" ]]; then
+    log "Kopyalanan URL tetikleyicileri yeni panel alan adına taşınıyor"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<SQL
+UPDATE pbx_config_values AS value
+SET text_value = replace(
+        replace(
+            value.text_value,
+            'https://$SOURCE_PANEL_DOMAIN/',
+            'https://$PANEL_DOMAIN/'
+        ),
+        'http://$SOURCE_PANEL_DOMAIN/',
+        'https://$PANEL_DOMAIN/'
+    ),
+    updated_at = now()
+FROM pbx_config_entities AS entity
+WHERE entity.entity_id = value.entity_id
+  AND entity.dept_id = value.dept_id
+  AND entity.store_name = 'url_triggers'
+  AND value.field_name = 'url_template'
+  AND (
+      value.text_value LIKE 'https://$SOURCE_PANEL_DOMAIN/%'
+      OR value.text_value LIKE 'http://$SOURCE_PANEL_DOMAIN/%'
+  );
+SQL
+fi
+
+log "Yerel, anahtar tabanli PBX yonetim baglantisi hazirlaniyor"
+install -d -m 0750 -o astera-panel -g astera-panel /etc/astera
+if [[ ! -s /etc/astera/alarm.key ]]; then
+    openssl rand -hex 32 >/etc/astera/alarm.key
+fi
+chown root:astera-panel /etc/astera/alarm.key
+chmod 0640 /etc/astera/alarm.key
+install -d -m 0750 -o astera-panel -g astera-panel /var/lib/astera-alarms
+cat >/etc/sudoers.d/astera-alarms <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/bin/systemctl restart asterisk.service, /usr/bin/systemctl restart postgresql.service, /usr/bin/systemctl restart nginx.service
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-alarms
+visudo -cf /etc/sudoers.d/astera-alarms >/dev/null
+if [[ ! -f /etc/astera/id_ed25519 ]]; then
+    sudo -u astera-panel ssh-keygen -q -t ed25519 -N '' \
+        -f /etc/astera/id_ed25519 -C "astera-panel@$TARGET_HOST"
+fi
+install -d -m 0700 -o root -g root /root/.ssh
+touch /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+panel_public_key="$(cat /etc/astera/id_ed25519.pub)"
+panel_authorized_key="from=\"127.0.0.1,::1\",restrict $panel_public_key"
+grep -Fvx "$panel_public_key" /root/.ssh/authorized_keys \
+    >/root/.ssh/authorized_keys.tmp || true
+mv /root/.ssh/authorized_keys.tmp /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+grep -Fqx "$panel_authorized_key" /root/.ssh/authorized_keys \
+    || printf '%s\n' "$panel_authorized_key" >>/root/.ssh/authorized_keys
+ssh-keyscan -H 127.0.0.1 localhost "$TARGET_HOST" 2>/dev/null \
+    >/etc/astera/known_hosts || true
+chown astera-panel:astera-panel /etc/astera/id_ed25519 /etc/astera/id_ed25519.pub \
+    /etc/astera/known_hosts
+chmod 600 /etc/astera/id_ed25519 /etc/astera/known_hosts
+customer_env_value="${CUSTOMER_NAME//\\/\\\\}"
+customer_env_value="${customer_env_value//\"/\\\"}"
+target_local_network="$(
+    python3 - "$target_cidr" <<'PY'
+import ipaddress
+import sys
+
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+)"
+[[ -n "$target_local_network" ]] || die "Hedef yerel agi hesaplanamadi: $target_cidr"
+cat >/etc/astera/astera.env <<ENV
+ASTERA_CUSTOMER_NAME="$customer_env_value"
+ASTERA_TIMEZONE=Europe/Istanbul
+ASTERA_PBX_HOST=$TARGET_HOST
+ASTERA_PBX_LOCAL_NET=$target_local_network
+ASTERA_PBX_SSH_HOST=127.0.0.1
+ASTERA_SSH_USER=root
+ASTERA_SSH_PORT=22
+ASTERA_SSH_PASS=
+ASTERA_SSH_KEY=/etc/astera/id_ed25519
+ASTERA_SSH_KNOWN_HOSTS=/etc/astera/known_hosts
+ASTERA_PANEL_DOMAIN=$PANEL_DOMAIN
+ASTERA_DB_NAME=$DB_NAME
+ASTERA_LICENSE_ISSUER_ENABLED=0
+ENV
+chown root:astera-panel /etc/astera/astera.env
+chmod 0640 /etc/astera/astera.env
+sudo -u astera-panel ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o UserKnownHostsFile=/etc/astera/known_hosts \
+    -o StrictHostKeyChecking=yes \
+    -i /etc/astera/id_ed25519 \
+    root@127.0.0.1 true \
+    || die "Panelin yerel PBX yonetim SSH baglantisi dogrulanamadi."
+log "SSHD ayarlari ana kurulumda degistirilmedi; configure_root_ssh.sh ayrica calistirilmalidir"
+
+log "Dosya izinleri duzenleniyor"
+install -d -m 0770 -o astera-panel -g astera-panel "$TARGET_APP_DIR/data"
+chown -R astera-panel:www-data "$TARGET_APP_DIR"
+find "$TARGET_APP_DIR" -type d -exec chmod u=rwx,g=rx,o= {} +
+find "$TARGET_APP_DIR" -type f -exec chmod u=rw,g=r,o= {} +
+chown -R astera-panel:astera-panel "$TARGET_APP_DIR/data"
+chmod -R u+rwX,g+rwX,o-rwx "$TARGET_APP_DIR/data"
+chown -R asterisk:asterisk \
+    /etc/asterisk /var/lib/asterisk /var/spool/asterisk /var/log/asterisk
+find /etc/asterisk -type d -exec chmod 750 {} +
+find /etc/asterisk -type f -exec chmod 640 {} +
+
+log "Kuyruklar firma bekleme muzigi sinifina aliniyor"
+sudo -u astera-panel env ASTERA_APP_DIR="$TARGET_APP_DIR" php -r '
+    require getenv("ASTERA_APP_DIR") . "/includes/bootstrap.php";
+    foreach (store_read("queues") as $queue) {
+        if (!is_array($queue) || trim((string) ($queue["id"] ?? "")) === "") {
+            continue;
+        }
+        $dept = (string) ($queue["dept"] ?? "");
+        $queue["musicclass"] = $dept !== "" ? dept_code_of($dept) : "default";
+        store_upsert("queues", $queue, "id");
+    }
+    echo generate_queues();
+' >"$WORK_DIR/queues_web.conf"
+[[ -s "$WORK_DIR/queues_web.conf" ]] \
+    || die "Kuyruk bekleme muzigi yapilandirmasi uretilemedi."
+install -m 0640 -o asterisk -g asterisk \
+    "$WORK_DIR/queues_web.conf" /etc/asterisk/queues_web.conf
+
+log "Bos firma muzik klasorleri varsayilan Fur Elise muzigiyle baglaniyor"
+mapfile -t MOH_DEPT_CODES < <(
+    sudo -u astera-panel env ASTERA_APP_DIR="$TARGET_APP_DIR" php -r '
+        require getenv("ASTERA_APP_DIR") . "/includes/bootstrap.php";
+        foreach (departments() as $department) {
+            $code = dept_code_of((string) ($department["id"] ?? ""));
+            if ($code !== "") {
+                echo $code, PHP_EOL;
+            }
+        }
+    '
+)
+for moh_code in "${MOH_DEPT_CODES[@]}"; do
+    [[ "$moh_code" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+    moh_dir="/var/lib/asterisk/moh/$moh_code"
+    moh_fallback="$moh_dir/astera-default-Fur-Elise.wav"
+    install -d -m 0755 -o asterisk -g asterisk "$moh_dir"
+    if find "$moh_dir" -maxdepth 1 -type f \
+        \( -iname '*.wav' -o -iname '*.gsm' -o -iname '*.ulaw' \) \
+        -print -quit | grep -q .; then
+        rm -f -- "$moh_fallback"
+    else
+        ln -sfn ../wav_Fur_Elise.wav "$moh_fallback"
+        chown -h asterisk:asterisk "$moh_fallback"
+    fi
+done
+
+log "PHP-FPM ve Nginx yapilandiriliyor"
+PHP_FPM_SERVICE=""
+for php_fpm_unit in \
+    /etc/systemd/system/php*-fpm.service \
+    /lib/systemd/system/php*-fpm.service \
+    /usr/lib/systemd/system/php*-fpm.service; do
+    [[ -f "$php_fpm_unit" ]] || continue
+    PHP_FPM_SERVICE="$(basename "$php_fpm_unit" .service)"
+    break
+done
+[[ -n "$PHP_FPM_SERVICE" ]] || die "PHP-FPM servisi bulunamadi."
+PHP_VERSION="${PHP_FPM_SERVICE#php}"
+PHP_VERSION="${PHP_VERSION%-fpm}"
+PHP_SOCKET="/run/php/php${PHP_VERSION}-fpm.sock"
+PHP_POOL="/etc/php/${PHP_VERSION}/fpm/pool.d/www.conf"
+[[ -f "$PHP_POOL" ]] || die "PHP-FPM havuz yapilandirmasi bulunamadi: $PHP_POOL"
+# The application deliberately uses PostgreSQL peer authentication as the
+# astera-panel OS user and needs its protected local SSH management key.
+sed -i \
+    -e 's/^user = .*/user = astera-panel/' \
+    -e 's/^group = .*/group = astera-panel/' \
+    -e 's/^pm.max_children = .*/pm.max_children = 10/' \
+    -e 's/^pm.start_servers = .*/pm.start_servers = 4/' \
+    -e 's/^pm.min_spare_servers = .*/pm.min_spare_servers = 2/' \
+    -e 's/^pm.max_spare_servers = .*/pm.max_spare_servers = 6/' \
+    "$PHP_POOL"
+
+install -d -m 0750 -o root -g astera-panel /etc/nginx/ssl
+install -d -m 0750 -o root -g www-data /var/lib/astera/provisioning
+if remote "test -f /etc/letsencrypt/live/$(printf '%q' "$PANEL_DOMAIN")/fullchain.pem \
+    && test -f /etc/letsencrypt/live/$(printf '%q' "$PANEL_DOMAIN")/privkey.pem"; then
+    pull_dir /etc/letsencrypt /etc/letsencrypt
+    WEB_CERT="/etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem"
+    WEB_KEY="/etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem"
+else
+    WEB_CERT="/etc/nginx/ssl/astera.crt"
+    WEB_KEY="/etc/nginx/ssl/astera.key"
+    if [[ ! -f "$WEB_CERT" || ! -f "$WEB_KEY" ]]; then
+        openssl req -x509 -nodes -newkey rsa:3072 -days 825 \
+            -keyout "$WEB_KEY" -out "$WEB_CERT" \
+            -subj "/CN=$PANEL_DOMAIN" \
+            -addext "subjectAltName=DNS:$PANEL_DOMAIN,IP:$TARGET_HOST"
+    fi
+    chmod 600 "$WEB_KEY"
+fi
+
+cat >/etc/nginx/sites-available/astera <<NGINX
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name $PANEL_DOMAIN $TARGET_HOST;
+    location ^~ /provision/ {
+        alias /var/lib/astera/provisioning/;
+        allow $PROVISION_NETWORK;
+        deny all;
+        default_type application/octet-stream;
+        add_header Cache-Control "no-store";
+    }
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name $PANEL_DOMAIN $TARGET_HOST;
+    root $TARGET_APP_DIR;
+    index index.php;
+    client_max_body_size 10m;
+
+    ssl_certificate $WEB_CERT;
+    ssl_certificate_key $WEB_KEY;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+
+    location ^~ /provision/ {
+        alias /var/lib/astera/provisioning/;
+        allow $PROVISION_NETWORK;
+        deny all;
+        default_type application/octet-stream;
+        add_header Cache-Control "no-store";
+    }
+
+    location = /asterisk-ws {
+        proxy_pass http://127.0.0.1:8088/ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_buffering off;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+    }
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:$PHP_SOCKET;
+        fastcgi_param ASTERA_PBX_SSH_HOST 127.0.0.1;
+        fastcgi_param ASTERA_SSH_USER root;
+        fastcgi_param ASTERA_SSH_PASS "";
+        fastcgi_param ASTERA_SSH_KEY /etc/astera/id_ed25519;
+        fastcgi_param ASTERA_SSH_KNOWN_HOSTS /etc/astera/known_hosts;
+        fastcgi_param ASTERA_PANEL_DOMAIN $PANEL_DOMAIN;
+        fastcgi_param ASTERA_DB_NAME $DB_NAME;
+    }
+    location ~ ^/(?:data|includes|migrations|bin|ops|deploy|tools)/ {
+        deny all;
+    }
+    location ~ /\. {
+        deny all;
+    }
+}
+NGINX
+rm -f /etc/nginx/sites-enabled/default
+ln -sfn /etc/nginx/sites-available/astera /etc/nginx/sites-enabled/astera
+nginx -t
+
+log "Yardimci systemd servisleri kuruluyor"
+cat >/etc/systemd/system/asterisk.service <<'SYSTEMD'
+[Unit]
+Description=Astera Asterisk PBX
+After=network-online.target postgresql.service dahdi.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+Environment=HOME=/var/lib/asterisk
+RuntimeDirectory=asterisk
+RuntimeDirectoryMode=0755
+ExecStart=/usr/sbin/asterisk -f -U asterisk -G asterisk
+ExecReload=/usr/sbin/asterisk -rx "core reload"
+ExecStop=/usr/sbin/asterisk -rx "core stop now"
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD
+if [[ -f "$TARGET_APP_DIR/deploy/astera-url-trigger.service" ]]; then
+    cp "$TARGET_APP_DIR/deploy/astera-url-trigger.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-cdr-partitions.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-cdr-partitions.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-cdr-partitions.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-cdr-partitions.timer" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-alarms.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-alarms.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-alarms.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-alarms.timer" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-queue-notifications.timer" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-fidelio-fias.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-fidelio-fias.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-syslog-export.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-syslog-export.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-backup-worker.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-backup-worker.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-network-routes.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-network-routes.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.service" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.service" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.timer" ]]; then
+    cp "$TARGET_APP_DIR/ops/systemd/astera-pjsip-health.timer" /etc/systemd/system/
+fi
+if [[ -f "$TARGET_APP_DIR/ops/networkmanager/90-astera-network-routes" ]]; then
+    install -d -m 0755 /etc/NetworkManager/dispatcher.d
+    install -m 0755 -o root -g root \
+        "$TARGET_APP_DIR/ops/networkmanager/90-astera-network-routes" \
+        /etc/NetworkManager/dispatcher.d/90-astera-network-routes
+fi
+install -d -m 0770 -o astera-panel -g astera-panel /var/backups/astera
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/backup_restore_root.sh" /usr/local/sbin/astera-backup-restore
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/backup_dump_root.sh" /usr/local/sbin/astera-backup-dump
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/backup_files_root.sh" /usr/local/sbin/astera-backup-files
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/network_routes_root.sh" /usr/local/sbin/astera-network-routes
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/pjsip_health_root.sh" /usr/local/sbin/astera-pjsip-health
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/system_update_root.sh" /usr/local/sbin/astera-system-update
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/system_power_root.sh" /usr/local/sbin/astera-system-power
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/fail2ban_root.sh" /usr/local/sbin/astera-fail2ban
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/fail2ban_mail_root.sh" /usr/local/sbin/astera-fail2ban-mail
+install -m 0750 -o root -g root \
+    "$TARGET_APP_DIR/bin/geoip_root.sh" /usr/local/sbin/astera-geoip
+install -d -m 0750 -o root -g astera-panel /etc/astera
+install -m 0644 -o root -g root \
+    "$TARGET_APP_DIR/ops/license/license_ed25519.pub" /etc/astera/license_ed25519.pub
+# Müşteri PBX'inde yalnız doğrulama anahtarı bulunur. Vendor issuer şeması ve
+# private key master kurulumuna özeldir.
+rm -f /etc/astera/license_vendor_private.pem
+touch /etc/astera/network-routes.conf
+chown root:astera-panel /etc/astera/network-routes.conf
+chmod 0640 /etc/astera/network-routes.conf
+cat >/etc/sudoers.d/astera-backup <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-backup-restore *
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-backup-dump *
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-backup-files *
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-backup
+visudo -cf /etc/sudoers.d/astera-backup >/dev/null
+cat >/etc/sudoers.d/astera-system-update <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-update *
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-system-update
+visudo -cf /etc/sudoers.d/astera-system-update >/dev/null
+cat >/etc/sudoers.d/astera-system-power <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-power reboot
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-system-power poweroff
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-system-power
+visudo -cf /etc/sudoers.d/astera-system-power >/dev/null
+cat >/etc/sudoers.d/astera-fail2ban <<'SUDOERS'
+astera-panel ALL=(root) NOPASSWD: /usr/local/sbin/astera-fail2ban *
+SUDOERS
+chmod 0440 /etc/sudoers.d/astera-fail2ban
+visudo -cf /etc/sudoers.d/astera-fail2ban >/dev/null
+/usr/local/sbin/astera-fail2ban configure yes 86400 600 5 "" yes "$ALERT_EMAIL"
+/usr/local/sbin/astera-geoip install
+[[ -x /usr/local/sbin/astera-geoip ]] \
+    || die "GeoIP yonetim araci kurulamadi."
+[[ -s /var/lib/astera/geoip/last-success ]] \
+    || die "GeoIP ilk CIDR guncellemesi tamamlanamadi."
+systemctl is-enabled --quiet astera-geoip.timer \
+    || die "GeoIP otomatik guncelleme zamanlayicisi etkin degil."
+systemctl is-active --quiet astera-geoip.timer \
+    || die "GeoIP otomatik guncelleme zamanlayicisi calismiyor."
+/usr/local/sbin/astera-geoip status \
+    | grep -Fq '"installed":true' \
+    || die "GeoIP altyapisi kurulum dogrulamasini gecemedi."
+systemctl daemon-reload
+systemctl enable "$PHP_FPM_SERVICE" nginx
+systemctl restart "$PHP_FPM_SERVICE" nginx
+
+log "PHP-FPM veritabani rolu ve lisans yazma yetkileri dogrulaniyor"
+PHP_POOL_USER=""
+for _ in {1..20}; do
+    PHP_POOL_USER="$(
+        ps -eo user:64=,args= \
+            | awk '$0 ~ /php-fpm: pool www/ {print $1; exit}'
+    )"
+    [[ -n "$PHP_POOL_USER" ]] && break
+    sleep 1
+done
+[[ "$PHP_POOL_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] \
+    || die "PHP-FPM havuz kullanicisi belirlenemedi."
+if ! sudo -u postgres psql -Atqc \
+    "SELECT 1 FROM pg_roles WHERE rolname='$(printf '%s' "$PHP_POOL_USER" | sed "s/'/''/g")'" \
+    | grep -qx 1; then
+    sudo -u postgres createuser --login "$PHP_POOL_USER"
+fi
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" \
+    -v app_role="$PHP_POOL_USER" -v db_name="$DB_NAME" <<'SQL'
+GRANT CONNECT ON DATABASE :"db_name" TO :"app_role";
+GRANT USAGE ON SCHEMA public TO :"app_role";
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    license_installations, license_signed_documents, license_entitlements,
+    license_audit_events, license_usage_snapshots
+    TO :"app_role";
+GRANT USAGE, SELECT, UPDATE ON SEQUENCE
+    license_installations_installation_id_seq,
+    license_signed_documents_document_id_seq,
+    license_entitlements_entitlement_id_seq,
+    license_audit_events_audit_id_seq,
+    license_usage_snapshots_snapshot_id_seq
+    TO :"app_role";
+SQL
+sudo -u "$PHP_POOL_USER" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
+BEGIN;
+SELECT current_user;
+UPDATE license_signed_documents SET updated_at = updated_at WHERE FALSE;
+ROLLBACK;
+SQL
+
+[[ -f /etc/systemd/system/astera-url-trigger.service ]] \
+    && systemctl enable --now astera-url-trigger.service
+[[ -f /etc/systemd/system/astera-cdr-partitions.timer ]] \
+    && systemctl enable --now astera-cdr-partitions.timer
+[[ -f /etc/systemd/system/astera-alarms.timer ]] \
+    && systemctl enable --now astera-alarms.timer
+[[ -f /etc/systemd/system/astera-queue-notifications.timer ]] \
+    && systemctl enable --now astera-queue-notifications.timer
+[[ -f /etc/systemd/system/astera-fidelio-fias.service ]] \
+    && systemctl enable --now astera-fidelio-fias.service
+[[ -f /etc/systemd/system/astera-syslog-export.service ]] \
+    && systemctl enable --now astera-syslog-export.service
+[[ -f /etc/systemd/system/astera-backup-worker.service ]] \
+    && systemctl enable --now astera-backup-worker.service
+[[ -f /etc/systemd/system/astera-network-routes.service ]] \
+    && systemctl enable --now astera-network-routes.service
+[[ -f /etc/systemd/system/astera-pjsip-health.timer ]] \
+    && systemctl enable --now astera-pjsip-health.timer
+
+if command -v sshd >/dev/null 2>&1; then
+    log "SSH 22 ve 45555 portlarini dinleyecek sekilde ayarlaniyor"
+    install -d -m 0755 /etc/ssh/sshd_config.d
+    cat >/etc/ssh/sshd_config.d/99-astera-ports.conf <<'EOF'
+Port 22
+Port 45555
+EOF
+    sshd -t
+    if systemctl list-unit-files ssh.socket --no-legend 2>/dev/null | grep -q '^ssh\.socket'; then
+        install -d -m 0755 /etc/systemd/system/ssh.socket.d
+        cat >/etc/systemd/system/ssh.socket.d/99-astera-ports.conf <<'EOF'
+[Socket]
+ListenStream=
+ListenStream=22
+ListenStream=45555
+EOF
+        systemctl daemon-reload
+        systemctl restart ssh.socket
+    fi
+    systemctl restart ssh
+fi
+
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+    log "Etkin UFW icin gerekli portlar aciliyor"
+    for interface in $(ip -o -4 route show default \
+        | awk '{for (i=1; i<=NF; i++) if ($i == "dev") print $(i+1)}' \
+        | sort -u); do
+        ip -o -4 route show proto kernel scope link dev "$interface"
+    done \
+        | awk '$1 ~ /^10\./ || $1 ~ /^192\.168\./ || $1 ~ /^172\.(1[6-9]|2[0-9]|3[01])\./ {print $1}' \
+        | sort -u \
+        | while IFS= read -r network; do
+            ufw allow from "$network" comment astera-local-network
+        done
+    ufw allow 22/tcp
+    ufw allow 45555/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw allow 5060/udp
+    ufw allow 5060/tcp
+    ufw allow 5061/tcp
+    ufw allow 8089/tcp
+    ufw allow 10000:20000/udp
+fi
+
+log "Kurulum dogrulaniyor"
+[[ "$(hostname)" == "$PBX_HOSTNAME" ]]
+[[ "$(timedatectl show --property=Timezone --value)" == "Europe/Istanbul" ]]
+grep -Eq "^127\\.0\\.1\\.1[[:space:]]+$PBX_HOSTNAME([[:space:]]|$)" /etc/hosts
+command -v mail >/dev/null
+systemctl is-active --quiet postfix.service
+test -f "$STATE_DIR/mail-test-submitted"
+test -x /usr/local/sbin/root-ssh-alert.sh
+[[ "$(grep -Fxc 'session optional pam_exec.so /usr/local/sbin/root-ssh-alert.sh' /etc/pam.d/sshd)" == "1" ]]
+sshd_effective_config="$(sshd -T 2>/dev/null)"
+awk '$1 == "usepam" && $2 == "yes" { found = 1 } END { exit !found }' \
+    <<<"$sshd_effective_config"
+grep -Fq '[[ "$ip" != "127.0.0.1" && "$ip" != "::1" ]] || exit 0' \
+    /usr/local/sbin/root-ssh-alert.sh
+php -l "$TARGET_APP_DIR/webphone.php"
+php -l "$TARGET_APP_DIR/api.php"
+php -l "$TARGET_APP_DIR/includes/generator.php"
+php -l "$TARGET_APP_DIR/includes/feature_codes.php"
+php -l "$TARGET_APP_DIR/pages/features.php"
+php -l "$TARGET_APP_DIR/pages/queue_missed_calls.php"
+php -l "$TARGET_APP_DIR/Agent/login.php"
+php -l "$TARGET_APP_DIR/Agent/agent_dashboard_v2.php"
+php -l "$TARGET_APP_DIR/Supervisor/fop_abone.php"
+php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/agentdetay.php"
+php -l "$TARGET_APP_DIR/Supervisor/reports/callcenter/anket.php"
+php -l "$TARGET_APP_DIR/includes/alarms.php"
+php -l "$TARGET_APP_DIR/bin/check_alarms.php"
+php -l "$TARGET_APP_DIR/bin/queue_missed_call_notifier.php"
+php -l "$TARGET_APP_DIR/includes/integrations.php"
+php -l "$TARGET_APP_DIR/bin/fidelio_fias_service.php"
+php -l "$TARGET_APP_DIR/pages/integrations.php"
+php -l "$TARGET_APP_DIR/includes/syslog_integration.php"
+php -l "$TARGET_APP_DIR/bin/syslog_export_service.php"
+php -l "$TARGET_APP_DIR/pages/integrations_syslog.php"
+php -l "$TARGET_APP_DIR/includes/backups.php"
+php -l "$TARGET_APP_DIR/bin/backup_worker.php"
+php -l "$TARGET_APP_DIR/pages/backup.php"
+php -l "$TARGET_APP_DIR/backup_download.php"
+php -l "$TARGET_APP_DIR/includes/system_updates.php"
+php -l "$TARGET_APP_DIR/system_updates.php"
+php -l "$TARGET_APP_DIR/includes/system_power.php"
+php -l "$TARGET_APP_DIR/system_power.php"
+php -l "$TARGET_APP_DIR/includes/fail2ban.php"
+php -l "$TARGET_APP_DIR/pages/fail2ban.php"
+php -l "$TARGET_APP_DIR/fail2ban.php"
+bash -n "$TARGET_APP_DIR/bin/backup_restore_root.sh"
+bash -n "$TARGET_APP_DIR/bin/backup_dump_root.sh"
+bash -n "$TARGET_APP_DIR/bin/backup_files_root.sh"
+bash -n "$TARGET_APP_DIR/bin/network_routes_root.sh"
+bash -n "$TARGET_APP_DIR/bin/pjsip_health_root.sh"
+bash -n "$TARGET_APP_DIR/bin/system_update_root.sh"
+bash -n "$TARGET_APP_DIR/bin/system_power_root.sh"
+bash -n "$TARGET_APP_DIR/bin/fail2ban_root.sh"
+bash -n "$TARGET_APP_DIR/bin/fail2ban_mail_root.sh"
+bash -n "$TARGET_APP_DIR/bin/geoip_root.sh"
+php -l "$TARGET_APP_DIR/includes/geoip.php"
+php -l "$TARGET_APP_DIR/includes/license.php"
+php -l "$TARGET_APP_DIR/includes/license_issuer.php"
+php -l "$TARGET_APP_DIR/pages/license.php"
+php -l "$TARGET_APP_DIR/pages/license_manager.php"
+php -l "$TARGET_APP_DIR/tools/license_issue.php"
+php -l "$TARGET_APP_DIR/pages/security.php"
+php -l "$TARGET_APP_DIR/pages/provisioning.php"
+php -l "$TARGET_APP_DIR/includes/provisioning.php"
+sudo -u postgres psql -d "$DB_NAME" -Atqc 'SELECT current_database()' | grep -Fxq "$DB_NAME"
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT version FROM astera_schema_migrations WHERE version='021_callcenter_agent_phone_mode'" \
+    | grep -Fxq '021_callcenter_agent_phone_mode'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='callcenter_agent_sessions'
+       AND column_name='phone_mode'" \
+    | grep -Fxq 'phone_mode'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT count(*) FROM information_schema.tables
+     WHERE table_schema='public' AND table_name IN (
+       'callcenter_surveys','callcenter_survey_categories','callcenter_survey_questions',
+       'callcenter_survey_evaluations','callcenter_survey_answers',
+       'callcenter_settings','callcenter_queue_settings',
+       'callcenter_queue_notification_recipients','callcenter_audit_logs'
+     )" | grep -Fxq '9'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT count(*) FROM astera_schema_migrations
+     WHERE version IN (
+       '027_autoprovision_devices','028_autoprovision_account_slot',
+       '029_autoprovision_templates_and_keys','030_autoprovision_schedule'
+     )" | grep -Fxq '4'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT bool_and(has_table_privilege(
+       'astera-panel', table_name, 'SELECT,INSERT,UPDATE,DELETE'
+     )) FROM (VALUES
+       ('autoprovision_devices'),('autoprovision_templates'),
+       ('autoprovision_device_keys'),('autoprovision_settings')
+     ) AS provisioning_tables(table_name)" | grep -Fxq 't'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT bool_and(has_table_privilege(
+       'astera-panel', table_name, 'SELECT,INSERT,UPDATE,DELETE'
+     )) FROM (VALUES
+       ('license_installations'),('license_signed_documents'),
+       ('license_entitlements'),('license_audit_events'),
+       ('license_usage_snapshots')
+     ) AS licensing_tables(table_name)" | grep -Fxq 't'
+test -d /var/lib/astera/provisioning
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT count(*) FROM information_schema.tables
+     WHERE table_schema='public' AND table_name IN (
+       'system_backup_settings','system_backup_archives','system_backup_jobs'
+     )" | grep -Fxq '3'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='system_backup_settings'
+       AND column_name='company_name'" | grep -Fxq 'company_name'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT to_regclass('public.network_static_routes')" \
+    | grep -Fxq 'network_static_routes'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT to_regclass('public.feature_takeover_settings')" \
+    | grep -Fxq 'feature_takeover_settings'
+sudo -u postgres psql -d "$DB_NAME" -Atqc \
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='network_interface_settings'
+       AND column_name='display_name'" | grep -Fxq 'display_name'
+command -v nmcli >/dev/null
+systemctl is-enabled --quiet NetworkManager
+if systemctl is-active --quiet NetworkManager; then
+    nmcli -t -f TYPE device status | grep -Fxq 'ethernet'
+else
+    test -s /etc/netplan/99-astera-networkmanager.yaml
+fi
+test -x /usr/local/sbin/astera-backup-restore
+test -x /usr/local/sbin/astera-backup-dump
+test -x /usr/local/sbin/astera-backup-files
+systemctl is-active --quiet astera-backup-worker.service
+test -x /usr/local/sbin/astera-network-routes
+systemctl is-active --quiet astera-network-routes.service
+test -x /usr/local/sbin/astera-pjsip-health
+systemctl is-enabled --quiet astera-pjsip-health.timer
+systemctl is-enabled --quiet astera-queue-notifications.timer
+test -x /usr/local/sbin/astera-system-update
+test -x /usr/local/sbin/astera-system-power
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/webphone.php" >/dev/null
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/Agent/login.php" \
+    -o "$WORK_DIR/agent-login-check.html"
+grep -Fq 'name="phone_mode"' "$WORK_DIR/agent-login-check.html"
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/Supervisor/login.php" \
+    -o "$WORK_DIR/supervisor-login-check.html"
+grep -Fq 'Supervisor Girişi' "$WORK_DIR/supervisor-login-check.html"
+curl -kfsS --resolve "$PANEL_DOMAIN:443:127.0.0.1" \
+    "https://$PANEL_DOMAIN/assets/js/app.js" \
+    -o "$WORK_DIR/app-js-check.js"
+grep -Fq 'pageExtensions()' "$WORK_DIR/app-js-check.js"
+
+old_ip_report="$STATE_DIR/source-ip-references.txt"
+grep -RIn --exclude='*.log' --exclude='source-ip-references.txt' \
+    -- "$SOURCE_HOST" /etc/asterisk "$TARGET_APP_DIR" >"$old_ip_report" || true
+
+if ((ACTIVATE == 1)); then
+    log "Asterisk etkinlestiriliyor"
+    systemctl enable asterisk
+    if ! systemctl restart asterisk; then
+        systemctl status asterisk --no-pager -l || true
+        journalctl -u asterisk -n 100 --no-pager || true
+        die "Asterisk servisi baslatilamadi."
+    fi
+    ASTERISK_VERSION_OUTPUT=""
+    for _ in {1..20}; do
+        ASTERISK_VERSION_OUTPUT="$(asterisk -rx 'core show version' 2>&1 || true)"
+        if grep -Eq "^Asterisk ${ASTERISK_SERIES}([. -]|$)" <<<"$ASTERISK_VERSION_OUTPUT"; then
+            break
+        fi
+        sleep 1
+    done
+    if ! systemctl is-active --quiet asterisk; then
+        systemctl status asterisk --no-pager -l || true
+        journalctl -u asterisk -n 100 --no-pager || true
+        die "Asterisk calisir durumda degil."
+    fi
+    if ! grep -Eq "^Asterisk ${ASTERISK_SERIES}([. -]|$)" <<<"$ASTERISK_VERSION_OUTPUT"; then
+        printf '%s\n' "$ASTERISK_VERSION_OUTPUT" >&2
+        systemctl status asterisk --no-pager -l || true
+        journalctl -u asterisk -n 100 --no-pager || true
+        die "Asterisk cekirdek komutlari yuklenmedi."
+    fi
+    printf '%s\n' "$ASTERISK_VERSION_OUTPUT"
+    PJSIP_STATUS="$(asterisk -rx 'pjsip show transports' 2>&1 || true)"
+    HTTP_STATUS="$(asterisk -rx 'http show status' 2>&1 || true)"
+    if grep -Fq "No such command" <<<"$PJSIP_STATUS" \
+        || grep -Fq "No such command" <<<"$HTTP_STATUS"; then
+        printf '%s\n%s\n' "$PJSIP_STATUS" "$HTTP_STATUS" >&2
+        systemctl status asterisk --no-pager -l || true
+        journalctl -u asterisk -n 100 --no-pager || true
+        die "Asterisk PJSIP veya HTTP modulleri yuklenmedi."
+    fi
+    printf '%s\n%s\n' "$PJSIP_STATUS" "$HTTP_STATUS"
+
+    log "CDR ve ODBC yazma yolu dogrulaniyor"
+    CDR_STATUS="$(asterisk -rx 'cdr show status' 2>&1 || true)"
+    ODBC_STATUS="$(asterisk -rx 'odbc show' 2>&1 || true)"
+    if ! grep -Fq 'Adaptive ODBC' <<<"$CDR_STATUS"; then
+        printf '%s\n' "$CDR_STATUS" >&2
+        die "Adaptive ODBC CDR arka ucu yuklenmedi."
+    fi
+    if ! grep -Eq 'Number of active connections:[[:space:]]+[1-9]' <<<"$ODBC_STATUS"; then
+        printf '%s\n' "$ODBC_STATUS" >&2
+        die "Asterisk PostgreSQL ODBC baglantisi etkin degil."
+    fi
+    CDR_RELKIND="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        "SELECT relkind::text FROM pg_class WHERE oid = to_regclass('public.cdr')")"
+    [[ "$CDR_RELKIND" == "p" ]] \
+        || die "CDR tablosu aylik partition yapisinda degil (relkind=$CDR_RELKIND)."
+    CDR_WRITER_KIND="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        "SELECT relkind::text FROM pg_class WHERE oid = to_regclass('public.cdr_asterisk_writer')")"
+    [[ "$CDR_WRITER_KIND" == "v" ]] \
+        || die "Asterisk CDR yazici gorunumu bulunamadi."
+    grep -Eq '^table[[:space:]]*=[[:space:]]*cdr_asterisk_writer[[:space:]]*$' \
+        /etc/asterisk/cdr_adaptive_odbc.conf \
+        || die "Asterisk CDR hedefi cdr_asterisk_writer degil."
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<'SQL'
+BEGIN;
+SET LOCAL ROLE asterisk;
+INSERT INTO cdr_asterisk_writer (
+    calldate, clid, src, dst, dcontext, channel, lastapp, duration,
+    billsec, disposition, amaflags, accountcode, uniqueid, linkedid
+) VALUES (
+    timezone('Europe/Istanbul', now()), '"Kurulum CDR Test" <999>', '999', '998',
+    'from-genel', 'PJSIP/999-install-test', 'Dial', 1,
+    0, 'NO ANSWER', 3, '', 'astera-install-cdr-test', 'astera-install-cdr-test'
+);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM cdr
+        WHERE uniqueid = 'astera-install-cdr-test'
+          AND calldate BETWEEN
+              timezone('Europe/Istanbul', now()) - interval '1 minute'
+              AND timezone('Europe/Istanbul', now()) + interval '1 minute'
+    ) THEN
+        RAISE EXCEPTION 'Asterisk CDR saat dönüşümü doğrulanamadı';
+    END IF;
+END;
+$$;
+ROLLBACK;
+SQL
+    DEFAULT_CDR_ROWS="$(sudo -u postgres psql -d "$DB_NAME" -Atqc \
+        'SELECT astera_cdr_default_partition_rows()')"
+    [[ "$DEFAULT_CDR_ROWS" == "0" ]] \
+        || die "Varsayilan CDR partition icinde $DEFAULT_CDR_ROWS satir bulundu."
+
+    for helper_script in \
+        configure_pbx_ssl.sh \
+        configure_webrtc.sh \
+        configure_root_ssh.sh; do
+        [[ -f "$TARGET_APP_DIR/$helper_script" ]] \
+            || die "Kurulum yardımcısı bulunamadı: $TARGET_APP_DIR/$helper_script"
+    done
+
+    log "Alan adı ve TLS sertifikası yapılandırılıyor"
+    bash "$TARGET_APP_DIR/configure_pbx_ssl.sh" "$PANEL_DOMAIN"
+
+    if [[ ! -r "$ASTERISK_MODULE_DIR/codec_opus.so" ]]; then
+        log "codec_opus bulunamadi; WebRTC codec uretimi ulaw/alaw icin uyarlaniyor"
+        python3 - "$TARGET_APP_DIR/includes/generator.php" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+body = path.read_text(encoding="utf-8")
+legacy = """            if (!in_array('opus', $codecs, true)) {
+                array_unshift($codecs, 'opus');
+            }
+"""
+current = """            // Stock/custom prompts are signed-linear audio. Some Asterisk
+            // installations can pass Opus through but cannot transcode prompts
+            // to Opus, so keep a narrow-band prompt codec ahead of Opus.
+            $codecs = array_values(array_filter(
+                $codecs,
+                static fn($codec): bool => strtolower((string) $codec) !== 'opus'
+            ));
+            $codecs[] = 'opus';
+"""
+fallback = """            // ASTERA: codec_opus translator is unavailable on this PBX.
+            $codecs = array_values(array_filter(
+                $codecs,
+                static fn($codec) => strtolower((string) $codec) !== 'opus'
+            ));
+            if (!$codecs) {
+                $codecs = ['ulaw', 'alaw'];
+            }
+"""
+if "codec_opus translator is unavailable" not in body:
+    source = current if current in body else legacy if legacy in body else None
+    if source is None:
+        raise SystemExit("generator.php Opus blogu desteklenen bicimde degil")
+    path.write_text(body.replace(source, fallback, 1), encoding="utf-8")
+PY
+        chown astera-panel:www-data "$TARGET_APP_DIR/includes/generator.php"
+        chmod 0640 "$TARGET_APP_DIR/includes/generator.php"
+        php -l "$TARGET_APP_DIR/includes/generator.php" >/dev/null
+    fi
+
+    log "WebRTC yapılandırılıyor"
+    PANEL_DOMAIN="$PANEL_DOMAIN" APP_DIR="$TARGET_APP_DIR" \
+        bash "$TARGET_APP_DIR/configure_webrtc.sh"
+
+    log "Root SSH erişimi yapılandırılıyor"
+    bash "$TARGET_APP_DIR/configure_root_ssh.sh"
+
+    log "Panelin yerel CDR sorgusu dogrulaniyor"
+    PANEL_CDR_TOTAL="$(
+        sudo -u astera-panel env ASTERA_APP_DIR="$TARGET_APP_DIR" php -r '
+            require getenv("ASTERA_APP_DIR") . "/includes/bootstrap.php";
+            $ok = false;
+            $rows = pbx_odbc_rows("SELECT count(*) AS total FROM cdr", $ok);
+            if (!$ok || !isset($rows[0]["total"])) {
+                fwrite(STDERR, "Panel CDR sorgusu basarisiz\n");
+                exit(1);
+            }
+            echo (int) $rows[0]["total"];
+        '
+    )"
+    [[ "$PANEL_CDR_TOTAL" =~ ^[0-9]+$ ]] \
+        || die "Panel CDR toplam kaydini okuyamadi."
+    systemctl start astera-cdr-partitions.service
+    echo "CDR kayit sayisi: $PANEL_CDR_TOTAL"
+else
+    systemctl disable asterisk.service 2>/dev/null || true
+    systemctl stop asterisk.service 2>/dev/null || true
+fi
+
+log "Guncel kurulum betigi /root altina kopyalaniyor"
+install -m 0755 -o root -g root \
+    "$TARGET_APP_DIR/install_new_pbx.sh" /root/install_new_pbx.sh
+
+cat >"$STATE_DIR/completed" <<STATE
+completed_at=$(date -Is)
+source=$SOURCE_HOST
+target=$TARGET_HOST
+customer=$CUSTOMER_NAME
+hostname=$PBX_HOSTNAME
+alert_email=$ALERT_EMAIL
+database=$DB_NAME
+application=$TARGET_APP_DIR
+activated=$ACTIVATE
+backup=$BACKUP_DIR
+STATE
+chmod 600 "$STATE_DIR/completed" "$old_ip_report"
+
+log "Kurulum tamamlandi"
+echo "Panel/WebPhone: https://$PANEL_DOMAIN/webphone.php"
+echo "Hedef IP ile:   https://$TARGET_HOST/webphone.php"
+echo "Hedef yedegi:   $BACKUP_DIR"
+echo "Eski IP raporu: $old_ip_report"
+if ((mail_test_confirmed == 1)); then
+    mail_check_line="[x] Test e-postasi dogrulandi: $ALERT_EMAIL"
+else
+    mail_check_line="[!] Test e-postasi gonderildi ancak teslimi dogrulanmadi: $ALERT_EMAIL"
+fi
+cat <<CHECKLIST
+
+Yeni sunucu kontrol listesi
+  [x] Musteri adi kaydedildi: $CUSTOMER_NAME
+  [x] PBX kisa adi: ${PBX_NAME:-ozel alan adi kullanildi}
+  [x] Hostname ayarlandi: $PBX_HOSTNAME
+  [x] Saat dilimi: Europe/Istanbul
+  [x] Ubuntu guncellemeleri kuruldu
+  [x] Postfix ve mailutils kuruldu
+  $mail_check_line
+  [x] Root SSH bildirim betigi ve PAM kaydi kuruldu
+  [x] 127.0.0.1 ve ::1 bildirim istisnalari etkin
+  [ ] Mevcut oturumu kapatmadan ikinci terminalden root SSH girisini test edin
+CHECKLIST
+if ((ACTIVATE == 0)); then
+    echo
+    echo "Asterisk guvenlik amaciyla BASLATILMADI."
+    echo "Kesin geciste kaynak cagrilarini durdurduktan sonra son senkronizasyonu yapin:"
+    echo "  sudo PANEL_DOMAIN=$PANEL_DOMAIN bash $0 --force --activate"
+else
+    echo
+    echo "Asterisk, SSL, WebRTC ve root SSH ayarlari tamamlandi."
+    echo "DNS/NAT, trunk kayitlari, WSS ve test cagrisini kontrol edin."
+fi

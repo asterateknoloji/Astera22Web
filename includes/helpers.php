@@ -23,6 +23,33 @@ function csrf_ok(?string $token = null): bool
     return is_string($token) && hash_equals(csrf_token(), $token);
 }
 
+function extension_pickup_groups(mixed $value, bool $strict = false): array
+{
+    $parts = is_array($value)
+        ? $value
+        : (preg_split('/[\s,;|\/-]+/', trim((string) $value), -1, PREG_SPLIT_NO_EMPTY) ?: []);
+    $groups = [];
+    foreach ($parts as $part) {
+        $text = trim((string) $part);
+        if (preg_match('/^\d{1,2}$/D', $text) !== 1 || (int) $text < 1 || (int) $text > 63) {
+            if ($strict && $text !== '') {
+                throw new InvalidArgumentException('Çağrı toplama grupları 1-63 arasında olmalıdır.');
+            }
+            continue;
+        }
+        $groups[(int) $text] = (int) $text;
+    }
+    $groups = array_values($groups);
+    sort($groups, SORT_NUMERIC);
+    if ($strict && !$groups) {
+        throw new InvalidArgumentException('En az bir çağrı toplama grubu girin.');
+    }
+    if (count($groups) > 32) {
+        throw new InvalidArgumentException('Bir abone en fazla 32 çağrı toplama grubuna üye olabilir.');
+    }
+    return $groups;
+}
+
 function json_out(array $data, int $code = 200): never
 {
     http_response_code($code);
@@ -49,7 +76,7 @@ function is_api_request(): bool
 
 function current_page(): string
 {
-    return preg_replace('/[^a-z_]/', '', (string) ($_GET['p'] ?? 'dashboard')) ?: 'dashboard';
+    return preg_replace('/[^a-z0-9_]/', '', (string) ($_GET['p'] ?? 'dashboard')) ?: 'dashboard';
 }
 
 function nav_active(string $page): string
@@ -59,7 +86,7 @@ function nav_active(string $page): string
 
 function codecs_list(): array
 {
-    return ['alaw', 'ulaw', 'g722', 'gsm', 'opus'];
+    return ['alaw', 'ulaw', 'g722', 'gsm', 'g729', 'opus'];
 }
 
 function pbx_ws_url(): string
@@ -80,8 +107,22 @@ function ring_strategies(): array
         'fewestcalls' => 'En az çağrı alan',
         'random' => 'Rastgele',
         'rrmemory' => 'Sırayla (hafızalı)',
-        'rrordered' => 'Sırayla (sabit sıralı)',
-        'linear' => 'Sırayla',
+        'rrordered' => 'Döngülü sıra (her çağrıda kaldığı yerden)',
+        'linear' => 'Sabit üye sırası (1 → 2 → 3)',
         'wrandom' => 'Ağırlıklı rastgele',
     ];
+}
+
+function normalize_group_member(string $value): string
+{
+    $value = trim($value);
+    if (preg_match('/^([0-9]{7,20})#$/D', $value, $matches) === 1) {
+        return $matches[1] . '#';
+    }
+    return preg_replace('/\D/', '', $value) ?? '';
+}
+
+function group_member_is_external(string $value): bool
+{
+    return preg_match('/^[0-9]{7,20}#$/D', $value) === 1;
 }
