@@ -1288,9 +1288,9 @@ function callcenter_agent_queue_state(array $queues, array $queueEvents): array
     $states = [];
     foreach ($queues as $queue) {
         $id = (string) $queue['id'];
-        $states[$id] = $queue + ['available' => 0, 'paused' => 0, 'busy' => 0,
+        $states[$id] = array_merge($queue, ['available' => 0, 'paused' => 0, 'busy' => 0,
             'unavailable' => 0, 'waiting' => 0, 'completed' => 0, 'abandoned' => 0,
-            'members' => []];
+            'members' => []]);
     }
     $waiting = [];
     foreach ($queueEvents as $event) {

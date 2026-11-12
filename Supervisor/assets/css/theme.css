@@ -7,8 +7,8 @@
     --primary: #4d7cff;
     --primary-strong: #3264ef;
     --primary-soft: rgba(77, 124, 255, .15);
-    --sidebar: #3973ee;
-    --sidebar-dark: #3067df;
+    --sidebar: #182235;
+    --sidebar-dark: #0f1726;
     --workspace: #292b37;
     --surface: #363846;
     --surface-2: #3e404f;
@@ -42,7 +42,7 @@ body.supervisor-app {
     overflow: hidden;
     color: #fff;
     background:
-        radial-gradient(circle at 10% 0, rgba(255,255,255,.15), transparent 25%),
+        radial-gradient(circle at 10% 0, rgba(106, 142, 207, .16), transparent 28%),
         linear-gradient(180deg, var(--sidebar), var(--sidebar-dark));
     box-shadow: 12px 0 35px rgba(0, 0, 0, .16);
 }
@@ -110,7 +110,7 @@ body.supervisor-app {
     transition: background .18s, color .18s, transform .18s;
 }
 .sidebar-link:hover { color: #fff; background: rgba(255,255,255,.1); transform: translateX(2px); }
-.sidebar-link.active { color: #fff; background: rgba(18,44,122,.3); box-shadow: inset 3px 0 0 #fff; }
+.sidebar-link.active { color: #fff; background: rgba(77,124,255,.2); box-shadow: inset 3px 0 0 #7aa2ff; }
 .sidebar-icon { width: 17px; text-align: center; font-size: 15px; }
 .sidebar-account {
     display: flex;
@@ -118,7 +118,7 @@ body.supervisor-app {
     gap: 10px;
     padding: 14px 17px;
     border-top: 1px solid rgba(255,255,255,.14);
-    background: rgba(20, 48, 128, .18);
+    background: rgba(3, 10, 24, .28);
 }
 .sidebar-account strong,.sidebar-account small { display: block; }
 .sidebar-account strong { overflow: hidden; max-width: 170px; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }

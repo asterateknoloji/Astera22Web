@@ -1,6 +1,20 @@
 <?php
 declare(strict_types=1);
 
+function astera_system_power_normalize_confirmation(string $value): string
+{
+    $value = strtr($value, [
+        'İ' => 'I', 'ı' => 'I', 'i' => 'I',
+        'Ş' => 'S', 'ş' => 'S',
+        'Ğ' => 'G', 'ğ' => 'G',
+        'Ü' => 'U', 'ü' => 'U',
+        'Ö' => 'O', 'ö' => 'O',
+        'Ç' => 'C', 'ç' => 'C',
+    ]);
+    $value = strtoupper(trim($value));
+    return preg_replace('/\s+/', ' ', $value) ?? $value;
+}
+
 function astera_system_power_run(string $action): string
 {
     if (!in_array($action, ['reboot', 'poweroff'], true)) {

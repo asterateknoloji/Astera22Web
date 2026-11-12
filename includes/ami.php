@@ -129,6 +129,8 @@ function pbx_status(?string $deptId = null): array
         "asterisk -rx 'core show uptime'",
         "echo '===ENDPOINTS==='",
         "asterisk -rx 'pjsip show endpoints'",
+        "echo '===CONTACTS==='",
+        "asterisk -rx 'pjsip show contacts'",
         "echo '===CHANNELS==='",
         "asterisk -rx 'core show channels'",
         "echo '===CHANNELS_CONCISE==='",
@@ -139,7 +141,8 @@ function pbx_status(?string $deptId = null): array
 
     $text = $blob['output'];
     $uptime = section($text, 'UPTIME', 'ENDPOINTS');
-    $endpoints = section($text, 'ENDPOINTS', 'CHANNELS');
+    $endpoints = section($text, 'ENDPOINTS', 'CONTACTS');
+    $contacts = section($text, 'CONTACTS', 'CHANNELS');
     $channels = section($text, 'CHANNELS', 'CHANNELS_CONCISE');
     $channelsConcise = section($text, 'CHANNELS_CONCISE', 'REGS');
     $regs = section($text, 'REGS', null);
@@ -149,16 +152,44 @@ function pbx_status(?string $deptId = null): array
         $registered = array_values(array_unique($m[1]));
     }
 
-    $sipAllow = null;
+    $registeredContacts = [];
+    foreach (preg_split('/\r?\n/', $contacts) as $line) {
+        if (preg_match('/^\s*Contact:\s+([^\/\s]+)\/(sips?:\S+)/i', $line, $match) !== 1) {
+            continue;
+        }
+        $sip = (string) $match[1];
+        $uri = (string) $match[2];
+        $address = preg_replace('/^sips?:/i', '', $uri) ?? '';
+        $address = explode(';', $address, 2)[0];
+        if (str_contains($address, '@')) {
+            $address = substr($address, (int) strrpos($address, '@') + 1);
+        }
+        if (preg_match('/^\[([0-9a-f:]+)\](?::\d+)?$/i', $address, $ipMatch) === 1) {
+            $ip = $ipMatch[1];
+        } else {
+            $ip = explode(':', $address, 2)[0];
+        }
+        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            continue;
+        }
+        $registeredContacts[$sip][$ip] = [
+            'ip' => $ip,
+            'uri' => $uri,
+        ];
+    }
+    $registeredContacts = array_map('array_values', $registeredContacts);
+
+    $sipAllow = [];
+    foreach (store_read('extensions') as $ext) {
+        if ($deptId === null || (string) ($ext['dept'] ?? '') === $deptId) {
+            $sipAllow[] = sip_user($ext);
+        }
+    }
+    $registered = array_values(array_intersect($registered, $sipAllow));
+    $registeredContacts = array_intersect_key($registeredContacts, array_flip($sipAllow));
+
     $channelAllow = null;
     if ($deptId) {
-        $sipAllow = [];
-        foreach (store_read('extensions') as $ext) {
-            if ((string) ($ext['dept'] ?? '') === $deptId) {
-                $sipAllow[] = sip_user($ext);
-            }
-        }
-        $registered = array_values(array_intersect($registered, $sipAllow));
         $channelAllow = $sipAllow;
         foreach (store_read('trunks') as $trunk) {
             if ((string) ($trunk['dept'] ?? '') === $deptId && !empty($trunk['enabled'])) {
@@ -464,6 +495,7 @@ function pbx_status(?string $deptId = null): array
         'version' => '22.11.0',
         'uptime' => trim($uptime),
         'registered' => $registered,
+        'registered_contacts' => $registeredContacts,
         'endpoint_state' => $endpointState,
         'active_calls' => $activeCalls,
         'channels' => $channelRows,
@@ -2417,8 +2449,58 @@ function pbx_upload_media(string $dept, string $kind): array
         pbx_ssh("asterisk -rx 'module reload sounds'");
         return ['ok' => true, 'playback' => $playback, 'output' => 'Ses yüklendi: ' . $playback];
     }
+    pbx_sync_moh_fallback($dept);
     pbx_ssh("asterisk -rx 'moh reload'");
     return ['ok' => true, 'output' => 'Bekleme müziği yüklendi'];
+}
+
+function pbx_sync_moh_fallback(string $dept): array
+{
+    $code = dept_code_of($dept);
+    if ($code === '') {
+        return ['ok' => false, 'output' => 'Firma kodu bulunamadı'];
+    }
+    $dir = '/var/lib/asterisk/moh/' . $code;
+    $fallback = $dir . '/astera-default-Fur-Elise.wav';
+    $command = 'set -e; mkdir -p ' . escapeshellarg($dir)
+        . '; if find ' . escapeshellarg($dir)
+        . ' -maxdepth 1 -type f \( -iname "*.wav" -o -iname "*.gsm" -o -iname "*.ulaw" \)'
+        . ' -print -quit | grep -q .; then rm -f -- ' . escapeshellarg($fallback)
+        . '; else test -s /var/lib/asterisk/moh/wav_Fur_Elise.wav'
+        . ' && ln -sfn ../wav_Fur_Elise.wav ' . escapeshellarg($fallback)
+        . '; fi; chown asterisk:asterisk ' . escapeshellarg($dir)
+        . '; chown -h asterisk:asterisk ' . escapeshellarg($fallback) . ' 2>/dev/null || true';
+    return pbx_ssh($command);
+}
+
+function pbx_moh_file_allowed(string $dept, string $path): bool
+{
+    if ($path === '') {
+        return true;
+    }
+    foreach (pbx_moh_files($dept) as $file) {
+        if ((string) ($file['path'] ?? '') === $path) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function pbx_sync_moh_selection(string $dept, string $path): array
+{
+    if ($path === '' || !pbx_moh_file_allowed($dept, $path)) {
+        return ['ok' => false, 'output' => 'Seçilen bekleme müziği bu firmaya ait değil'];
+    }
+    $class = moh_file_class($dept, $path);
+    $dir = '/var/lib/asterisk/moh/.astera-classes/' . $class;
+    $link = $dir . '/selected.' . strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    $command = 'set -e; rm -rf -- ' . escapeshellarg($dir)
+        . '; install -d -m 0755 -o asterisk -g asterisk ' . escapeshellarg($dir)
+        . '; ln -s ' . escapeshellarg($path) . ' ' . escapeshellarg($link)
+        . '; chown -h asterisk:asterisk ' . escapeshellarg($link);
+    $result = pbx_ssh($command);
+    $result['class'] = $class;
+    return $result;
 }
 
 function pbx_normalize_wav49(string $remote): string
@@ -2525,6 +2607,7 @@ function pbx_delete_media(string $path): array
     }
     store_delete('media', 'id', (string) $mediaRow['id']);
     if (str_contains($path, '/moh/')) {
+        pbx_sync_moh_fallback((string) ($mediaRow['dept'] ?? ''));
         pbx_ssh("asterisk -rx 'moh reload'");
     } else {
         pbx_ssh("asterisk -rx 'module reload sounds'");

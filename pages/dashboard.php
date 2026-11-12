@@ -243,7 +243,7 @@ $meterClass = static fn(?float $value): string => $value === null ? '' : ($value
     </div>
     <div class="dashboard-extension-table">
         <table>
-            <thead><tr><th>Dahili</th><th>Ad</th><th>Bağlantı</th><th>Durum</th></tr></thead>
+            <thead><tr><th>Dahili</th><th>Ad</th><th>Bağlantı</th><th>IP adresi</th><th>Durum</th></tr></thead>
             <tbody id="dashboardExtensionBody">
             <?php foreach ($exts as $row): ?>
                 <?php
@@ -263,6 +263,7 @@ $meterClass = static fn(?float $value): string => $value === null ? '' : ($value
                     <td><code><?= e($row['exten']) ?></code></td>
                     <td><?= e($row['name'] ?? '') ?></td>
                     <td><code><?= e($connection) ?></code></td>
+                    <td><code class="ext-ip">—</code></td>
                     <td>
                         <?php if ($technology === 'pjsip'): ?>
                             <span class="pill dim ext-state" data-sip="<?= e($sip) ?>">—</span>
@@ -274,7 +275,7 @@ $meterClass = static fn(?float $value): string => $value === null ? '' : ($value
                     </td>
                 </tr>
             <?php endforeach; ?>
-            <?php if (!$exts): ?><tr><td colspan="4" class="muted">Abone yok.</td></tr><?php endif; ?>
+            <?php if (!$exts): ?><tr><td colspan="5" class="muted">Abone yok.</td></tr><?php endif; ?>
             </tbody>
         </table>
     </div>

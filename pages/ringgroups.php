@@ -2,6 +2,13 @@
 $rows = scoped('ringgroups');
 $exts = scoped('extensions');
 $showDept = current_dept_id() === null;
+$ringgroupLicense = license_capacity_view('callcenter.ringgroups', 'Ring grup', current_dept_id());
+$mohFiles = [];
+try {
+    $mohFiles = pbx_moh_files(current_dept_id());
+} catch (Throwable) {
+    $mohFiles = [];
+}
 ?>
 <div class="toolbar">
     <p class="muted">
@@ -73,5 +80,7 @@ $showDept = current_dept_id() === null;
 <script>
 window.ASTERA = window.ASTERA || {};
 window.ASTERA.exts = <?= json_encode($exts, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.mohFiles = <?= json_encode($mohFiles, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.ringgroupLicense = <?= json_encode($ringgroupLicense, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 document.addEventListener('DOMContentLoaded', () => Astera.pageRinggroups());
 </script>

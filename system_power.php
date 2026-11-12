@@ -18,7 +18,10 @@ try {
     $expectedConfirmation = $action === 'reboot'
         ? 'YENIDEN BASLAT'
         : ($action === 'poweroff' ? 'KAPAT' : '');
-    if ($expectedConfirmation === '' || (string) ($_POST['confirmation'] ?? '') !== $expectedConfirmation) {
+    if (
+        $expectedConfirmation === ''
+        || astera_system_power_normalize_confirmation((string) ($_POST['confirmation'] ?? '')) !== $expectedConfirmation
+    ) {
         throw new RuntimeException('İşlem onayı eksik veya hatalı.');
     }
     $message = astera_system_power_run($action);

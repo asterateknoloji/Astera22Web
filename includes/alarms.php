@@ -417,5 +417,18 @@ function astera_alarm_evaluate(string $key): ?array
         $count = (float) astera_alarm_shell("bash -lc \"apt list --upgradable 2>/dev/null | awk 'NR>1{n++} END{print n+0}'\"");
         return [$count, "{$count} güncelleme mevcut"];
     }
+    if ($key === 'license_limit') {
+        $status = license_status();
+        if (($status['mode'] ?? '') === 'legacy') {
+            return [0.0, 'Legacy lisans modu; kapasite sınırsız'];
+        }
+        $limit = license_limit('concurrent.external_calls');
+        $usage = license_usage('concurrent.external_calls');
+        $blocked = $limit !== null && $usage >= $limit;
+        $summary = $limit === null
+            ? "Harici çağrı kullanımı: {$usage}; limit sınırsız"
+            : "Harici çağrı kullanımı: {$usage}/{$limit}";
+        return [$blocked ? 1.0 : 0.0, $summary];
+    }
     return null; // Olay tabanlı alarmlar PBX olay üreticileri tarafından beslenir.
 }

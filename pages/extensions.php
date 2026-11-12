@@ -39,6 +39,51 @@ $departmentIndex = [];
 foreach (departments() as $department) {
     $departmentIndex[(string) ($department['id'] ?? '')] = $department;
 }
+$licenseScope = current_dept_id();
+$extensionLicense = [
+    'blocked' => false,
+    'enabled' => true,
+    'limit' => null,
+    'usage' => 0,
+    'message' => '',
+];
+try {
+    $extensionLicense['enabled'] = license_feature_enabled('subscribers.extensions', null);
+    $extensionLicense['limit'] = license_limit('subscribers.extensions', null);
+    $extensionLicense['usage'] = license_usage('subscribers.extensions', null);
+    if (!$extensionLicense['enabled']) {
+        $extensionLicense['blocked'] = true;
+        $extensionLicense['message'] = 'Abone lisansı etkin değil. Yeni abone eklenemez.';
+    } elseif ($extensionLicense['limit'] !== null
+        && $extensionLicense['usage'] >= $extensionLicense['limit']) {
+        $extensionLicense['blocked'] = true;
+        $extensionLicense['message'] = sprintf(
+            'Abone lisansınız %d, mevcut abone %d. Yeni abone eklenemez.',
+            $extensionLicense['limit'],
+            $extensionLicense['usage']
+        );
+    }
+    if (!$extensionLicense['blocked'] && $licenseScope !== null
+        && license_has_tenant_entitlement('subscribers.extensions', $licenseScope)) {
+        $extensionLicense['enabled'] = license_feature_enabled('subscribers.extensions', $licenseScope);
+        $extensionLicense['limit'] = license_limit('subscribers.extensions', $licenseScope);
+        $extensionLicense['usage'] = license_usage('subscribers.extensions', $licenseScope);
+        if (!$extensionLicense['enabled']) {
+            $extensionLicense['blocked'] = true;
+            $extensionLicense['message'] = 'Firma abone lisansı etkin değil. Yeni abone eklenemez.';
+        } elseif ($extensionLicense['limit'] !== null
+            && $extensionLicense['usage'] >= $extensionLicense['limit']) {
+            $extensionLicense['blocked'] = true;
+            $extensionLicense['message'] = sprintf(
+                'Firma abone lisansınız %d, mevcut abone %d. Yeni abone eklenemez.',
+                $extensionLicense['limit'],
+                $extensionLicense['usage']
+            );
+        }
+    }
+} catch (Throwable) {
+    // API tarafındaki zorunlu lisans kontrolü her durumda korunur.
+}
 ?>
 <div class="toolbar">
     <p class="muted">Dahili numara firma içinde kullanılır. SIP kullanıcı adı farklı firmada aynı dahili varsa otomatik öneklenir. Mevcut 1001/1002: <code>1001</code> / <code>1002</code>.</p>
@@ -166,5 +211,6 @@ window.ASTERA.extensions = <?= json_encode($clientRows, JSON_UNESCAPED_UNICODE |
 window.ASTERA.outboundRoutes = <?= json_encode($clientOutboundRoutes, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 window.ASTERA.priSpans = <?= json_encode($clientPriSpans, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 window.ASTERA.extensionDefaultFallbacks = <?= json_encode($defaultFallbacks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+window.ASTERA.extensionLicense = <?= json_encode($extensionLicense, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 document.addEventListener('DOMContentLoaded', () => Astera.pageExtensions());
 </script>

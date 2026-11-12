@@ -48,20 +48,22 @@ $navItems[] = ['group' => 'Medya', 'icon' => 'audio-lines', 'sections' => [[null
     'sounds' => 'Sistem sesleri',
 ]]]];
 if (is_super()) {
-    $navItems[] = ['group' => 'Sistem', 'icon' => 'settings', 'sections' => [[null, [
-        'contexts' => 'Dialplan context’leri',
-        'logs' => 'Log',
-        'security' => 'Güvenlik / IP İzinleri',
-        'fail2ban' => 'Fail2ban',
-        'ssl' => 'SSL Sertifikası',
-        'network' => 'Ethernet Ayarları',
-        'ntp' => 'NTP Ayarları',
-        'ami' => 'AMI Kullanıcıları',
+    $maintenance = ['license' => 'Lisanslama'];
+    if (license_issuer_enabled()) {
+        $maintenance['license_manager'] = 'Vendor lisans yöneticisi';
+    }
+    $maintenance += [
         'alarmlar' => 'Alarmlar',
-        'integrations' => 'Entegrasyonlar',
         'backup' => 'Backup',
         'system' => 'Sistem / Güç',
-    ]]]];
+        'logs' => 'Loglar',
+    ];
+    $navItems[] = ['group' => 'Sistem', 'icon' => 'settings', 'sections' => [
+        ['Ağ ve erişim', ['network' => 'Ethernet Ayarları', 'ntp' => 'NTP Ayarları', 'ssl' => 'SSL Sertifikası']],
+        ['Güvenlik', ['security' => 'Güvenlik / IP İzinleri', 'fail2ban' => 'Fail2ban']],
+        ['Santral servisleri', ['ami' => 'AMI Kullanıcıları', 'contexts' => 'Dialplan context’leri', 'integrations' => 'Entegrasyonlar']],
+        ['Bakım ve izleme', $maintenance],
+    ]];
 }
 
 $pageMeta = [
@@ -105,6 +107,8 @@ $pageMeta = [
     'network' => ['Ethernet ayarları', 'Ağ arayüzleri, IP adresleri ve yönlendirme.'],
     'ntp' => ['NTP Ayarları', 'Sunucu saat dilimi ve zaman senkronizasyonu.'],
     'ami' => ['AMI kullanıcıları', 'Asterisk Manager Interface erişim hesapları.'],
+    'license' => ['Lisanslama', 'Lisans durumu, limitler ve lisans içe aktarma.'],
+    'license_manager' => ['Vendor lisans yöneticisi', 'Müşteri lisanslarını üretin ve yönetin.'],
     'alarmlar' => ['Alarmlar', 'Kaynak, servis ve çağrı alarmları.'],
     'integrations' => ['Entegrasyonlar', 'Syslog ve harici sistem entegrasyonları.'],
     'backup' => ['Backup', 'Yapılandırma ve veri yedekleri.'],

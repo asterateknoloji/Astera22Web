@@ -50,6 +50,13 @@ function department_extension_limit(string $deptId): int
 
 function assert_extension_capacity(string $deptId, int $additional = 1): void
 {
+    if ($additional > 0) {
+        try {
+            license_assert_scoped_capacity('subscribers.extensions', $additional, $deptId);
+        } catch (RuntimeException $exception) {
+            json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+        }
+    }
     $limit = department_extension_limit($deptId);
     if ($limit <= 0 || $additional <= 0) {
         return;
@@ -172,7 +179,7 @@ function can_page(string $page): bool
     if (is_super()) {
         return true;
     }
-    return !in_array($page, ['departments', 'contexts', 'system', 'ntp', 'ami', 'fail2ban', 'alarmlar', 'integrations', 'backup', 'network', 'logs', 'security', 'ssl'], true);
+    return !in_array($page, ['departments', 'contexts', 'system', 'ntp', 'ami', 'license', 'license_manager', 'fail2ban', 'alarmlar', 'integrations', 'backup', 'network', 'logs', 'security', 'ssl'], true);
 }
 
 function migrate_tenants(): void

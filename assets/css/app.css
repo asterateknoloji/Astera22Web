@@ -284,6 +284,21 @@ body:not(.login-body) { display: grid; grid-template-columns: 230px 1fr; min-hei
     transform: translateY(-50%);
 }
 .rail nav .nav-group-items a.active::before { background: var(--accent); }
+.nav-section-label {
+    margin: 7px 10px 2px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, .07);
+    color: #778196;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+}
+.nav-section-label:first-child {
+    margin-top: 1px;
+    padding-top: 2px;
+    border-top: 0;
+}
 .rail-foot {
     margin-top: auto; padding: 12px 8px 4px;
     display: grid; gap: 6px; color: #9aa3b5; font-size: 13px;
@@ -883,6 +898,197 @@ body:not(.login-body) { display: grid; grid-template-columns: 230px 1fr; min-hei
 .security-live summary small { color: var(--muted); }
 .security-live[open] summary { margin-bottom: 14px; }
 .security-live .log { max-height: 440px; margin: 0; }
+.security-geoip-form { margin-top: 16px; }
+.security-geoip-card { display: grid; gap: 18px; }
+.security-geoip-status {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+}
+.security-geoip-status > span {
+    display: grid;
+    gap: 4px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fafbfc;
+}
+.security-geoip-status small { color: var(--muted); font-size: 11px; }
+.security-geoip-status strong { font-size: 13px; }
+.security-geoip-policy {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 13px 15px;
+    border: 1px solid #efc386;
+    border-radius: 10px;
+    background: #fff9ef;
+}
+.security-geoip-policy > span { display: grid; gap: 3px; }
+.security-geoip-policy small { color: var(--muted); line-height: 1.4; }
+.security-geoip-policy select {
+    min-width: 330px;
+    min-height: 40px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--ink);
+    padding: 7px 10px;
+}
+.security-geoip-toolbar {
+    display: grid;
+    grid-template-columns: 220px 260px minmax(0, 1fr);
+    align-items: end;
+    gap: 12px;
+}
+.security-geoip-toolbar > label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; }
+.security-geoip-toolbar select,
+.security-geoip-toolbar input,
+.security-country-row select {
+    min-height: 38px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--ink);
+    padding: 7px 10px;
+}
+.security-geoip-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px 12px;
+    color: var(--muted);
+    font-size: 11px;
+}
+.security-geoip-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.security-geoip-legend i { width: 9px; height: 9px; border-radius: 50%; background: #b8c0ca; }
+.security-geoip-legend i.allow { background: #2e9b64; }
+.security-geoip-legend i.block { background: #c94d4d; }
+.security-country-list {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    max-height: 480px;
+    overflow: auto;
+    padding: 2px;
+}
+.security-country-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-left: 4px solid #c7cdd5;
+    border-radius: 9px;
+    background: #fff;
+}
+.security-country-row[hidden] { display: none; }
+.security-country-row.is-allow { order: -1; border-left-color: #2e9b64; background: #f4fbf7; }
+.security-country-row.is-block { border-left-color: #c94d4d; background: #fff7f7; }
+.security-country-name {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: baseline;
+    gap: 7px;
+    min-width: 0;
+}
+.security-country-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.security-country-name small { color: var(--muted); }
+.security-country-row select { min-width: 0; width: 100%; }
+.security-family-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 12px;
+}
+.security-family-check input { accent-color: #c45d32; }
+.security-geoip-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+}
+.security-geoip-actions .security-safety { margin-right: auto; max-width: 520px; }
+.security-action-status {
+    display: none;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+}
+.security-action-status:not(:empty) { display: inline-flex; }
+.security-action-status.is-working { background: #fff4dc; color: #815b13; }
+.security-action-status.is-success { background: #e8f7ee; color: #216b45; }
+.security-action-status.is-error { background: #fdecec; color: #a23737; }
+.license-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 24px;
+    background: linear-gradient(135deg, #f5f8ff, #fff 55%, #eef8f2);
+}
+.license-hero h2 { margin: 6px 0 8px; }
+.license-hero p { margin: 0; }
+.license-state {
+    display: grid;
+    min-width: 220px;
+    gap: 3px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+}
+.license-state small, .license-state span { color: var(--muted); font-size: 11px; }
+.license-state.is-valid { border-color: #9bd3b5; background: #edf9f2; color: #1f7048; }
+.license-state.is-grace { border-color: #e3c176; background: #fff8e5; color: #815b13; }
+.license-state.is-expired { border-color: #e6aaaa; background: #fff0f0; color: #a23737; }
+.license-summary { margin-top: 16px; }
+.license-fingerprint {
+    display: block;
+    overflow-wrap: anywhere;
+    margin: 12px 0;
+    padding: 12px;
+    border-radius: 8px;
+    background: #f4f6f8;
+}
+.license-feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.license-feature {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-left: 4px solid #b7bec8;
+    border-radius: 10px;
+}
+.license-feature.is-enabled { border-left-color: #2e9b64; background: #f7fcf9; }
+.license-feature > span { display: grid; gap: 3px; }
+.license-feature small, .license-feature code { color: var(--muted); font-size: 11px; }
+.license-feature-value { min-width: 115px; text-align: right; }
+.license-feature-value em { color: #7a8493; font-size: 10px; font-style: normal; font-weight: 700; }
+.license-manager-grid { align-items: start; margin-top: 16px; }
+.license-manager-grid > .card { margin-top: 0; }
+.license-entitlement-editor { display: grid; gap: 8px; margin: 12px 0 16px; }
+.license-entitlement-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 140px;
+    gap: 12px;
+    align-items: center;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fafbfd;
+}
+.license-entitlement-row label { display: flex; align-items: center; gap: 10px; margin: 0; }
+.license-entitlement-row label span { display: grid; gap: 2px; }
+.license-entitlement-row code { color: var(--muted); font-size: 10px; }
+.license-history td small { display: block; margin-top: 4px; color: var(--muted); }
+.license-history td:first-child small { max-width: 340px; overflow-wrap: anywhere; }
+#licenseEnvelopeOutput { width: 100%; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .log-browser { display: grid; gap: 16px; }
 .log-browser-heading, .log-result-heading {
     display: flex;
@@ -2058,6 +2264,16 @@ audio { height: 32px; max-width: 280px; }
     .outbound-pattern-row { grid-template-columns: 1fr 1fr; }
     .outbound-pattern-row .danger { grid-column: 2; justify-self: end; }
     .security-intro, .security-rule-grid, .security-apply-card { grid-template-columns: 1fr; }
+    .license-hero, .license-feature-grid, .license-entitlement-row { grid-template-columns: 1fr; }
+    .license-state { min-width: 0; }
+    .security-geoip-status { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .security-geoip-policy { align-items: stretch; flex-direction: column; }
+    .security-geoip-policy select { min-width: 0; width: 100%; }
+    .security-geoip-toolbar { grid-template-columns: 1fr; }
+    .security-country-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .security-geoip-legend { justify-content: flex-start; }
+    .security-geoip-actions { align-items: stretch; flex-direction: column; }
+    .security-geoip-actions .security-safety { margin-right: 0; max-width: none; }
     .network-intro, .network-interface-header, .network-setting-grid, .network-apply-card {
         grid-template-columns: 1fr;
     }
@@ -2085,6 +2301,7 @@ audio { height: 32px; max-width: 280px; }
     .report-period-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .report-period-date { grid-column: 1; }
     .network-live-grid, .network-step-fields { grid-template-columns: 1fr; }
+    .security-country-list { grid-template-columns: 1fr; }
     .ssl-dns-form { grid-template-columns: 1fr; }
     .ssl-field-wide { grid-column: auto; }
     .ssl-secret { align-items: stretch; }

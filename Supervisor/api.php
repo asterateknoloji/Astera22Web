@@ -13,14 +13,6 @@ if (empty($_SESSION['callcenter_supervisor'])) {
 }
 try {
     $user = (array) $_SESSION['callcenter_supervisor'];
-    if (!empty($user['must_change_password'])) {
-        http_response_code(403);
-        echo json_encode(
-            ['ok' => false, 'error' => 'Önce varsayılan parolanızı değiştirin'],
-            JSON_UNESCAPED_UNICODE
-        );
-        exit;
-    }
     $target = (string) ($_SESSION['callcenter_supervisor_dept'] ?? $user['dept_id']);
     if (!callcenter_supervisor_can_access_department($user, $target)) {
         $target = (string) $user['dept_id'];

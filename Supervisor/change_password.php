@@ -11,14 +11,16 @@ if (empty($_SESSION['callcenter_supervisor'])) {
     exit;
 }
 $user = (array) $_SESSION['callcenter_supervisor'];
-if (empty($user['must_change_password'])) {
-    header('Location: dashboard.php');
-    exit;
-}
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!csrf_ok()) {
         $error = 'İstek doğrulanamadı. Sayfayı yenileyin.';
+    } elseif (!callcenter_supervisor_authenticate(
+        (string) $user['dept_id'],
+        (string) $user['username'],
+        (string) ($_POST['current_password'] ?? '')
+    )) {
+        $error = 'Mevcut parola hatalı.';
     } elseif ((string) ($_POST['password'] ?? '') !== (string) ($_POST['password_confirm'] ?? '')) {
         $error = 'Yeni parolalar eşleşmiyor.';
     } else {
@@ -62,11 +64,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <main class="auth-shell">
     <div class="auth-brand"><span class="sidebar-logo" aria-hidden="true">A</span><span><strong>ASTERA</strong><small>SUPERVISOR</small></span></div>
     <section class="auth-card">
-        <h1><?= ui_icon('lock') ?> Yeni parola belirleyin</h1>
-        <p>Varsayılan parola yalnızca ilk giriş içindir.</p>
+        <h1><?= ui_icon('lock') ?> Parola değiştir</h1>
+        <p>Parolanızı değiştirmek isteğe bağlıdır.</p>
         <?php if ($error !== ''): ?><div class="alert alert-danger" role="alert"><?= ui_icon('circle-alert') ?><span><?= e($error) ?></span></div><?php endif; ?>
         <form method="post">
             <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+            <label for="current_password"><span>Mevcut parola</span>
+                <input id="current_password" name="current_password" type="password"
+                    autocomplete="current-password" required autofocus>
+            </label>
             <label for="password"><span>Yeni parola</span>
                 <input id="password" name="password" type="password" minlength="10"
                     autocomplete="new-password" required>
@@ -77,10 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </label>
             <button class="btn btn-primary" type="submit"><?= ui_icon('check') ?> Parolayı değiştir</button>
         </form>
-        <form method="post" action="logout.php">
-            <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-            <button class="btn btn-outline" type="submit">Çıkış</button>
-        </form>
+        <a class="btn btn-outline" href="dashboard.php">Değiştirmeden devam et</a>
     </section>
     <div class="auth-foot"><?= ui_icon('shield-check') ?> Parolanız en az 10 karakter olmalıdır.</div>
 </main>

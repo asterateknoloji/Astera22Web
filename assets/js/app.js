@@ -209,17 +209,27 @@ const Astera = {
                 const extensionBody = document.getElementById('dashboardExtensionBody');
                 if (extensionBody) {
                     const registered = new Set((s.registered || []).map(String));
+                    const registeredContacts = s.registered_contacts || {};
                     const collator = new Intl.Collator('tr', { numeric: true, sensitivity: 'base' });
                     const extensionRows = [...extensionBody.querySelectorAll('[data-dashboard-extension]')];
                     let registeredCount = 0;
                     let unregisteredCount = 0;
                     extensionRows.forEach((row) => {
+                        const ipCell = row.querySelector('.ext-ip');
                         if (row.dataset.technology !== 'pjsip') {
                             row.dataset.registration = 'other';
+                            if (ipCell) ipCell.textContent = '—';
                             return;
                         }
-                        const online = registered.has(row.dataset.sip || '');
+                        const sip = row.dataset.sip || '';
+                        const online = registered.has(sip);
+                        const ips = [...new Set(
+                            (Array.isArray(registeredContacts[sip]) ? registeredContacts[sip] : [])
+                                .map((contact) => String(contact?.ip || ''))
+                                .filter(Boolean)
+                        )];
                         row.dataset.registration = online ? 'registered' : 'unregistered';
+                        if (ipCell) ipCell.textContent = online && ips.length ? ips.join(', ') : '—';
                         registeredCount += online ? 1 : 0;
                         unregisteredCount += online ? 0 : 1;
                     });
@@ -514,7 +524,17 @@ const Astera = {
                     </label>
                     <label><input type="checkbox" name="record" ${row.record !== false ? 'checked' : ''}> Ses kaydı</label>
                     <label>Firma paneli kullanıcısı<input name="panel_user" value="${row.panel_user || ''}" placeholder="sadece bu firmayı görür"></label>
-                    <label>Firma paneli parolası<input name="panel_pass" type="password" minlength="8" value="" placeholder="${row.panel_pass ? 'boş = değişmesin' : 'en az 8 karakter'}"></label>
+                    <label>Firma paneli parolası<input name="panel_pass" type="password" minlength="8" value="" placeholder="${row.panel_pass_set ? 'boş = değişmesin' : 'en az 8 karakter'}"></label>
+                    <hr>
+                    <h4>Supervisor yöneticisi</h4>
+                    <label>Kullanıcı adı<input value="${row.supervisor_username || 'admin'}" readonly></label>
+                    <label>Yeni Supervisor parolası
+                        <input name="supervisor_password" type="password" minlength="8" maxlength="256"
+                            autocomplete="new-password" placeholder="${row.id ? 'boş = değişmesin' : 'varsayılan: password'}">
+                        <small class="muted">${row.supervisor_password_default
+                            ? 'Mevcut varsayılan parola: password'
+                            : (row.id ? 'Mevcut özel parola güvenlik nedeniyle görüntülenemez.' : 'İlk giriş: admin / password')}</small>
+                    </label>
                     <div class="modal-actions">
                         <button class="btn" type="button" id="c">Vazgeç</button>
                         <button class="btn primary">Kaydet</button>
@@ -537,6 +557,12 @@ const Astera = {
         const extensions = window.ASTERA.extensions || [];
         const outboundRoutes = window.ASTERA.outboundRoutes || [];
         const priSpans = window.ASTERA.priSpans || [];
+        const extensionLicense = window.ASTERA.extensionLicense || {};
+        const allowNewExtension = () => {
+            if (!extensionLicense.blocked) return true;
+            this.toast(extensionLicense.message || 'Abone lisansınız yetersiz. Yeni abone eklenemez.', true);
+            return false;
+        };
         const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
         })[char]);
@@ -791,10 +817,12 @@ const Astera = {
         };
         document.getElementById('addExt').onclick = () => {
             if (!(window.ASTERA.dept || (window.ASTERA.depts || []).length)) return this.toast('Önce firma ekleyin', true);
+            if (!allowNewExtension()) return;
             open();
         };
         document.getElementById('importExt').onclick = () => {
             if (!(window.ASTERA.dept || (window.ASTERA.depts || []).length)) return this.toast('Önce firma ekleyin', true);
+            if (!allowNewExtension()) return;
             this.modal(`
                 <h3>Aboneleri CSV ile içe aktar</h3>
                 <form id="extensionImportForm">
@@ -1907,6 +1935,13 @@ const Astera = {
 
     pageQueues() {
         const exts = window.ASTERA.exts || [];
+        const mohFiles = window.ASTERA.mohFiles || [];
+        const queueLicense = window.ASTERA.queueLicense || {};
+        const allowNewQueue = () => {
+            if (!queueLicense.blocked) return true;
+            this.toast(queueLicense.message || 'Kuyruk lisansınız yetersiz. Yeni kuyruk eklenemez.', true);
+            return false;
+        };
         const strategies = window.ASTERA.strategies || {};
         const checked = (row, key, fallback = false) => (row[key] ?? fallback) ? 'checked' : '';
         const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -1929,6 +1964,13 @@ const Astera = {
             }
             const deptId = row.dept || window.ASTERA.dept || '';
             const dept = (window.ASTERA.depts || []).find((item) => item.id === deptId) || {};
+            const mohOptions = (selectedDept, selectedPath = '') => {
+                const options = mohFiles
+                    .filter((file) => !selectedDept || file.dept === selectedDept)
+                    .map((file) => `<option value="${esc(file.path)}" ${file.path === selectedPath ? 'selected' : ''}>${esc(file.file)}</option>`)
+                    .join('');
+                return `<option value="" ${selectedPath ? '' : 'selected'}>Departman müziği (yoksa default)</option>${options}`;
+            };
             const recordEnabled = row.record ?? dept.record ?? true;
             const selectedStrategy = row.strategy || 'linear';
             const st = Object.entries(strategies).map(([k, v]) =>
@@ -1955,7 +1997,9 @@ const Astera = {
                             <label>Servis seviyesi (sn)<input name="servicelevel" type="number" min="1" value="${row.servicelevel ?? 60}"></label>
                             <label>Kuyruk ağırlığı<input name="weight" type="number" min="0" max="100" value="${row.weight ?? 0}"></label>
                             <label>Üye cevap sonrası gecikme (sn)<input name="memberdelay" type="number" min="0" max="60" value="${row.memberdelay ?? 0}"></label>
-                            <label>Bekleme müziği sınıfı<input name="musicclass" value="${row.musicclass || row.dept || ''}" placeholder="Firma kodu"></label>
+                            <label>Bekleme müziği
+                                <select name="moh_file">${mohOptions(deptId, row.moh_file || '')}</select>
+                            </label>
                             <label>CID Ad Öneki (CID Name Prefix)<input name="cid_prefix" value="${esc(row.cid_prefix || '')}" placeholder="Kuyruk:"></label>
                         </div>
                     </fieldset>
@@ -2001,6 +2045,11 @@ const Astera = {
                                 </select>
                             </label>
                             <label>Anons sıklığı (sn)<input name="announce_frequency" type="number" min="0" value="${row.announce_frequency ?? 60}"></label>
+                            <label>İlk sıra anonsu gecikmesi (sn)
+                                <input name="announce_position_startdelay" type="number" min="0" max="3600"
+                                    value="${row.announce_position_startdelay ?? row.announce_frequency ?? 60}">
+                                <small>0 = girişte hemen; süre dolunca sıra numarası okunmaya başlar</small>
+                            </label>
                             <label>Minimum anons aralığı (sn)<input name="min_announce_frequency" type="number" min="0" value="${row.min_announce_frequency ?? 15}"></label>
                             <label>Periyodik anons sıklığı (sn)<input name="periodic_announce_frequency" type="number" min="0" value="${row.periodic_announce_frequency ?? 60}"></label>
                             <label>Sıra numarası üst sınırı<input name="announce_position_limit" type="number" min="0" value="${row.announce_position_limit ?? 0}"><small>0 = tüm sıralar</small></label>
@@ -2088,6 +2137,7 @@ const Astera = {
             const memberBox = document.getElementById('queueMembers');
             const memberManual = document.getElementById('queueMemberManual');
             const deptInput = document.querySelector('#f [name="dept"]');
+            const mohSelect = form.elements.moh_file;
             const availableMembers = () => {
                 const dept = deptInput ? deptInput.value : (row.dept || window.ASTERA.dept || '');
                 return exts.filter((extension) => !dept || extension.dept === dept);
@@ -2141,6 +2191,7 @@ const Astera = {
             if (deptInput && deptInput.tagName === 'SELECT') deptInput.addEventListener('change', () => {
                 members = [];
                 renderMembers();
+                mohSelect.innerHTML = mohOptions(deptInput.value, '');
             });
             form.addEventListener('submit', (event) => {
                 if (applyManualMembers()) return;
@@ -2151,9 +2202,12 @@ const Astera = {
             document.getElementById('c').onclick = () => this.closeModal();
             this.formSubmit(form, 'queue_save');
         };
-        document.getElementById('addQueue').onclick = () => open();
+        document.getElementById('addQueue').onclick = () => {
+            if (allowNewQueue()) open();
+        };
         document.querySelectorAll('[data-edit-queue]').forEach((b) => b.onclick = () => open(JSON.parse(b.dataset.editQueue)));
         document.querySelectorAll('[data-copy-queue]').forEach((b) => b.onclick = () => {
+            if (!allowNewQueue()) return;
             const source = JSON.parse(b.dataset.copyQueue);
             const suffix = Date.now().toString().slice(-6);
             open({
@@ -2172,6 +2226,13 @@ const Astera = {
 
     pageRinggroups() {
         const exts = window.ASTERA.exts || [];
+        const mohFiles = window.ASTERA.mohFiles || [];
+        const ringgroupLicense = window.ASTERA.ringgroupLicense || {};
+        const allowNewRinggroup = () => {
+            if (!ringgroupLicense.blocked) return true;
+            this.toast(ringgroupLicense.message || 'Ring grup lisansınız yetersiz. Yeni ring grup eklenemez.', true);
+            return false;
+        };
         const dept = window.ASTERA.dept || '';
         const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
@@ -2188,6 +2249,13 @@ const Astera = {
                 });
             }
             const initialDept = row.dept || dept || (window.ASTERA.depts[0] && window.ASTERA.depts[0].id) || '';
+            const mohOptions = (selectedDept, selectedPath = '') => {
+                const options = mohFiles
+                    .filter((file) => !selectedDept || file.dept === selectedDept)
+                    .map((file) => `<option value="${esc(file.path)}" ${file.path === selectedPath ? 'selected' : ''}>${esc(file.file)}</option>`)
+                    .join('');
+                return `<option value="" ${selectedPath ? '' : 'selected'}>Departman müziği (yoksa default)</option>${options}`;
+            };
             this.modal(`
                 <h3>${editing ? 'Grup düzenle' : (isCopy ? 'Ring grup çoğalt' : 'Ring grup')}</h3>
                 <form id="f" class="ringgroup-form">
@@ -2245,7 +2313,9 @@ const Astera = {
                         <legend>Anons ve arayan bilgisi</legend>
                         <div class="grid-2">
                             ${this.soundField('announcement', row.announcement || '', 'Başlangıç anonsu')}
-                            <label>Müzik sınıfı<input name="music_class" value="${esc(row.music_class || row.dept || window.ASTERA.dept || '')}" placeholder="Firma kodu"></label>
+                            <label>Bekleme müziği
+                                <select name="moh_file">${mohOptions(initialDept, row.moh_file || '')}</select>
+                            </label>
                             <label>CID Ad Öneki<input name="cid_prefix" value="${esc(row.cid_prefix || '')}" placeholder="Grup:"></label>
                         </div>
                     </fieldset>
@@ -2276,6 +2346,7 @@ const Astera = {
             this.bindDestPairs();
             const form = document.getElementById('f');
             const deptSelect = form.elements.dept;
+            const mohSelect = form.elements.moh_file;
             const memberBox = document.getElementById('rgMembers');
             const memberManual = document.getElementById('rgMemberManual');
             const availableMembers = () => {
@@ -2331,6 +2402,7 @@ const Astera = {
                 deptSelect.onchange = () => {
                     members = [];
                     renderMembers();
+                    mohSelect.innerHTML = mohOptions(deptSelect.value, '');
                 };
             }
             form.addEventListener('submit', (event) => {
@@ -2341,9 +2413,12 @@ const Astera = {
             document.getElementById('c').onclick = () => this.closeModal();
             this.formSubmit(form, 'ringgroup_save');
         };
-        document.getElementById('addRg').onclick = () => open();
+        document.getElementById('addRg').onclick = () => {
+            if (allowNewRinggroup()) open();
+        };
         document.querySelectorAll('[data-edit-rg]').forEach((b) => b.onclick = () => open(JSON.parse(b.dataset.editRg)));
         document.querySelectorAll('[data-copy-rg]').forEach((b) => b.onclick = () => {
+            if (!allowNewRinggroup()) return;
             const source = JSON.parse(b.dataset.copyRg);
             open({
                 ...source,
@@ -2372,6 +2447,12 @@ const Astera = {
     },
 
     pageIvr() {
+        const ivrLicense = window.ASTERA.ivrLicense || {};
+        const allowNewIvr = () => {
+            if (!ivrLicense.blocked) return true;
+            this.toast(ivrLicense.message || 'IVR lisansınız yetersiz. Yeni IVR eklenemez.', true);
+            return false;
+        };
         const open = (row = {}) => {
             const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
                 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
@@ -2578,7 +2659,9 @@ const Astera = {
                 } catch (err) { this.toast(err.message, true); }
             };
         };
-        document.getElementById('addIvr').onclick = () => open();
+        document.getElementById('addIvr').onclick = () => {
+            if (allowNewIvr()) open();
+        };
         document.querySelectorAll('[data-edit-ivr]').forEach((b) => b.onclick = () => open(JSON.parse(b.dataset.editIvr)));
         document.querySelectorAll('[data-del-ivr]').forEach((b) => b.onclick = async () => {
             if (!confirm('IVR silinsin mi?')) return;
@@ -3470,6 +3553,166 @@ const Astera = {
         });
     },
 
+    pageLicense() {
+        document.querySelector('[data-copy-license-fingerprint]')?.addEventListener('click', async () => {
+            const fingerprint = document.getElementById('licenseFingerprint')?.textContent?.trim() || '';
+            try {
+                await navigator.clipboard.writeText(fingerprint);
+                this.toast('Kurulum kimliği kopyalandı');
+            } catch (error) {
+                this.toast('Kurulum kimliği kopyalanamadı', true);
+            }
+        });
+        const form = document.getElementById('licenseImportForm');
+        form?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (!confirm('İmzalı lisans doğrulanıp mevcut aktif lisansın yerine geçirilsin mi?')) return;
+            const button = form.querySelector('button[type="submit"]');
+            const status = document.getElementById('licenseImportStatus');
+            const original = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Doğrulanıyor…';
+            status.className = 'security-action-status is-working';
+            status.textContent = 'İmza ve santral kimliği doğrulanıyor…';
+            try {
+                const result = await this.post('license_import', {
+                    license_envelope: form.elements.license_envelope.value
+                });
+                button.textContent = 'Lisans yüklendi ✓';
+                status.className = 'security-action-status is-success';
+                status.textContent = result.message;
+                this.toast(result.message);
+                window.setTimeout(() => location.reload(), 1000);
+            } catch (error) {
+                button.disabled = false;
+                button.textContent = original;
+                status.className = 'security-action-status is-error';
+                status.textContent = error.message;
+                this.toast(error.message, true);
+            }
+        });
+    },
+
+    pageLicenseManager() {
+        const customerForm = document.getElementById('licenseCustomerForm');
+        customerForm?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const button = customerForm.querySelector('button[type="submit"]');
+            button.disabled = true;
+            try {
+                const result = await this.post(
+                    'license_issuer_customer_save',
+                    Object.fromEntries(new FormData(customerForm).entries())
+                );
+                this.toast(result.message);
+                setTimeout(() => location.reload(), 500);
+            } catch (error) {
+                this.toast(error.message, true);
+                button.disabled = false;
+            }
+        });
+
+        const issueForm = document.getElementById('licenseIssueForm');
+        const status = document.getElementById('licenseManagerStatus');
+        const output = document.getElementById('licenseEnvelopeOutput');
+        const outputCard = document.getElementById('licenseEnvelopeCard');
+        const outputId = document.getElementById('licenseEnvelopeId');
+        const resetIssueForm = () => {
+            issueForm?.reset();
+            if (!issueForm) return;
+            issueForm.elements.installation_id.value = '';
+            issueForm.elements.previous_document_id.value = '';
+            status.textContent = '';
+        };
+        document.querySelector('[data-license-issue-reset]')?.addEventListener('click', resetIssueForm);
+        issueForm?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const data = Object.fromEntries(new FormData(issueForm).entries());
+            const renewing = Boolean(data.previous_document_id);
+            const button = issueForm.querySelector('button[type="submit"]');
+            button.disabled = true;
+            status.className = 'security-action-status is-working';
+            status.textContent = 'Payload imzalanıyor ve doğrulanıyor…';
+            try {
+                const result = await this.post(
+                    renewing ? 'license_issuer_renew' : 'license_issuer_issue',
+                    data
+                );
+                output.value = result.envelope;
+                outputId.textContent = result.license_id;
+                outputCard.hidden = false;
+                outputCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                status.className = 'security-action-status is-success';
+                status.textContent = result.message;
+                this.toast(result.message);
+            } catch (error) {
+                status.className = 'security-action-status is-error';
+                status.textContent = error.message;
+                this.toast(error.message, true);
+            } finally {
+                issueForm.elements.signing_passphrase.value = '';
+                button.disabled = false;
+            }
+        });
+        document.querySelectorAll('[data-license-renew]').forEach((button) => {
+            button.addEventListener('click', () => {
+                resetIssueForm();
+                issueForm.elements.previous_document_id.value = button.dataset.document;
+                issueForm.elements.installation_id.value = button.dataset.installation;
+                issueForm.elements.customer_id.value = button.dataset.customer;
+                issueForm.elements.pbx_name.value = button.dataset.pbx;
+                issueForm.elements.fingerprint.value = button.dataset.fingerprint;
+                try {
+                    JSON.parse(button.dataset.entitlements || '[]').forEach((item) => {
+                        const enabled = issueForm.elements[`entitlement_enabled[${item.feature_code}]`];
+                        const limit = issueForm.elements[`entitlement_limit[${item.feature_code}]`];
+                        if (enabled) enabled.checked = item.enabled === true
+                            || item.enabled === '1' || item.enabled === 't';
+                        if (limit) limit.value = item.limit_value ?? '';
+                    });
+                } catch (error) {
+                    this.toast('Mevcut entitlement değerleri okunamadı', true);
+                }
+                issueForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                status.textContent = 'Yenileme modu: entitlement değerlerini kontrol edin.';
+            });
+        });
+        document.querySelectorAll('[data-license-revoke]').forEach((button) => {
+            button.addEventListener('click', async () => {
+                const reason = prompt('Lisans iptal nedenini girin:');
+                if (!reason) return;
+                button.disabled = true;
+                try {
+                    const result = await this.post('license_issuer_revoke', {
+                        document_id: button.dataset.licenseRevoke,
+                        reason
+                    });
+                    this.toast(result.message);
+                    setTimeout(() => location.reload(), 500);
+                } catch (error) {
+                    button.disabled = false;
+                    this.toast(error.message, true);
+                }
+            });
+        });
+        document.querySelector('[data-copy-license-envelope]')?.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(output.value);
+                this.toast('Lisans zarfı kopyalandı');
+            } catch (error) {
+                this.toast('Lisans zarfı kopyalanamadı', true);
+            }
+        });
+        document.querySelector('[data-download-license-envelope]')?.addEventListener('click', () => {
+            const blob = new Blob([output.value + '\n'], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${outputId.textContent || 'astera-license'}.json`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        });
+    },
+
     pageSecurity() {
         const form = document.getElementById('securityFirewallForm');
         const output = document.getElementById('securityOutput');
@@ -3518,6 +3761,133 @@ const Astera = {
                 this.toast('Kurallar onaylanamadı', true);
             }
         };
+
+        const geoForm = document.getElementById('securityGeoipForm');
+        const geoContinent = document.getElementById('geoipContinent');
+        const geoSearch = document.getElementById('geoipCountrySearch');
+        const geoPolicy = document.getElementById('geoipPolicyMode');
+        const geoNeutralLegend = document.getElementById('geoipNeutralLegend');
+        const geoRows = Array.from(document.querySelectorAll('.security-country-row'));
+        const filterGeoCountries = () => {
+            const continent = geoContinent?.value || '';
+            const query = String(geoSearch?.value || '').trim().toLocaleLowerCase('tr-TR');
+            geoRows.forEach((row) => {
+                const matchesContinent = query !== '' || row.dataset.continent === continent;
+                const matchesQuery = query === '' || String(row.dataset.search || '').includes(query);
+                row.hidden = !(matchesContinent && matchesQuery);
+            });
+        };
+        geoContinent?.addEventListener('change', filterGeoCountries);
+        geoSearch?.addEventListener('input', filterGeoCountries);
+        filterGeoCountries();
+
+        const syncGeoPolicy = () => {
+            if (!geoNeutralLegend) return;
+            geoNeutralLegend.lastChild.textContent = geoPolicy?.value === 'allow_only'
+                ? ' Kural yok: SIP ve SSH trafiği varsayılan olarak engellenir'
+                : ' Kural yok: mevcut UFW davranışı sürer';
+        };
+        geoPolicy?.addEventListener('change', syncGeoPolicy);
+        syncGeoPolicy();
+
+        geoRows.forEach((row) => {
+            const action = row.querySelector('[data-geo-action]');
+            const ipv4 = row.querySelector('[data-geo-ipv4]');
+            const ipv6 = row.querySelector('[data-geo-ipv6]');
+            const sync = () => {
+                const enabled = action.value !== '';
+                ipv4.disabled = !enabled;
+                ipv6.disabled = !enabled;
+                row.classList.toggle('is-allow', action.value === 'allow');
+                row.classList.toggle('is-block', action.value === 'block');
+                if (enabled && !ipv4.checked && !ipv6.checked) {
+                    ipv4.checked = true;
+                    ipv6.checked = true;
+                }
+            };
+            action.addEventListener('change', sync);
+            sync();
+        });
+
+        const collectGeoRules = () => geoRows.map((row) => {
+            const action = row.querySelector('[data-geo-action]').value;
+            return {
+                country: row.dataset.country,
+                action,
+                ipv4: row.querySelector('[data-geo-ipv4]').checked,
+                ipv6: row.querySelector('[data-geo-ipv6]').checked
+            };
+        }).filter((rule) => rule.action && (rule.ipv4 || rule.ipv6));
+
+        const runGeoAction = async (action, data, button) => {
+            const status = document.getElementById('geoipActionStatus');
+            const originalLabel = button.textContent;
+            button.disabled = true;
+            button.textContent = action === 'security_geoip_apply' ? 'Uygulanıyor…' : 'Güncelleniyor…';
+            if (status) {
+                status.className = 'security-action-status is-working';
+                status.textContent = 'İşlem devam ediyor, lütfen bekleyin…';
+            }
+            output.closest('details').open = true;
+            output.textContent = 'GeoIP listeleri doğrulanıyor ve atomik olarak güncelleniyor…';
+            try {
+                const result = await this.post(action, data);
+                output.textContent = result.output || result.message || 'GeoIP işlemi tamamlandı.';
+                this.toast(result.message || 'GeoIP işlemi tamamlandı');
+                button.textContent = 'Uygulandı ✓';
+                if (status) {
+                    status.className = 'security-action-status is-success';
+                    status.textContent = result.message || 'İşlem başarıyla uygulandı.';
+                }
+                const updated = Number(result.status?.last_update || 0);
+                if (updated) {
+                    document.getElementById('geoipLastUpdate').textContent =
+                        new Intl.DateTimeFormat('tr-TR', {
+                            dateStyle: 'short',
+                            timeStyle: 'medium'
+                        }).format(new Date(updated * 1000));
+                }
+            } catch (error) {
+                output.textContent = error.message;
+                this.toast(error.message, true);
+                button.textContent = 'Başarısız';
+                if (status) {
+                    status.className = 'security-action-status is-error';
+                    status.textContent = `İşlem uygulanamadı: ${error.message}`;
+                }
+            } finally {
+                button.disabled = false;
+                window.setTimeout(() => {
+                    button.textContent = originalLabel;
+                }, 2500);
+            }
+        };
+
+        geoForm?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const rules = collectGeoRules();
+            const allowed = rules.filter((rule) => rule.action === 'allow').length;
+            const blocked = rules.filter((rule) => rule.action === 'block').length;
+            const policyMode = geoPolicy?.value || 'allow_only';
+            const policyText = policyMode === 'allow_only'
+                ? 'Seçilmeyen tüm ülkeler engellenecek'
+                : 'Seçilmeyen ülkeler mevcut UFW kurallarına bırakılacak';
+            if (!confirm(
+                `${allowed} izin ve ${blocked} engel ülke kuralı SIP 5060 ve SSH için uygulanacak. `
+                + `${policyText}. Devam edilsin mi?`
+            )) return;
+            await runGeoAction(
+                'security_geoip_apply',
+                {
+                    geo_policy_mode: policyMode,
+                    geo_rules: JSON.stringify(rules)
+                },
+                geoForm.querySelector('button[type="submit"]')
+            );
+        });
+        document.getElementById('geoipUpdateNow')?.addEventListener('click', async (event) => {
+            await runGeoAction('security_geoip_update', {}, event.currentTarget);
+        });
     },
 
     pageCrm(options = {}) {

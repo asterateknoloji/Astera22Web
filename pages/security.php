@@ -26,6 +26,19 @@ $ufw = pbx_ssh(
 $ufwOutput = trim((string) ($ufw['output'] ?? ''));
 $ufwActive = preg_match('/^(?:Status:\s*active|Durum:\s*etkin)\s*$/mi', $ufwOutput) === 1;
 $currentIp = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+$geoPolicyMode = geoip_normalize_policy_mode($firewall['geoip_policy_mode'] ?? 'allow_only');
+$geoRules = geoip_normalize_rules(
+    array_key_exists('geoip_rules', $firewall) ? $firewall['geoip_rules'] : geoip_default_rules()
+);
+$geoRulesByCountry = [];
+foreach ($geoRules as $geoRule) {
+    $geoRulesByCountry[$geoRule['country']] = $geoRule;
+}
+$geoContinents = geoip_continents();
+$geoStatus = geoip_remote_status();
+$geoLastUpdate = !empty($geoStatus['last_update'])
+    ? date('d.m.Y H:i:s', (int) $geoStatus['last_update'])
+    : 'Henüz güncellenmedi';
 ?>
 <article class="card security-intro">
     <div>
@@ -132,6 +145,138 @@ $currentIp = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
                 <?= !empty($firewall['rollback_unit']) && empty($firewall['confirmed']) ? '' : 'disabled' ?>>
                 2. Çalıştığını onayla
             </button>
+        </div>
+    </article>
+</form>
+
+<form id="securityGeoipForm" class="security-form security-geoip-form">
+    <article class="card security-geoip-card">
+        <div class="security-rule-heading">
+            <span class="security-step">4</span>
+            <div>
+                <h2>SIP ve SSH ülke filtresi</h2>
+                <p>
+                    Ülke CIDR listeleri IPv4 ve IPv6 için ayrı indirilir. Operatör ve yönetim
+                    ağlarınız filtreden önce korunur. İzinli ülkeler SIP 5060 ve tanımlı SSH
+                    portlarına erişebilir; HTTPS ve RTP bu filtreden etkilenmez.
+                </p>
+            </div>
+        </div>
+
+        <div class="security-geoip-status">
+            <span>
+                <small>Altyapı</small>
+                <strong><?= !empty($geoStatus['installed']) ? 'Kurulu' : 'Kurulu değil' ?></strong>
+            </span>
+            <span>
+                <small>Son başarılı güncelleme</small>
+                <strong id="geoipLastUpdate"><?= e($geoLastUpdate) ?></strong>
+            </span>
+            <span>
+                <small>Otomatik güncelleme</small>
+                <strong><?= !empty($geoStatus['timer_enabled']) ? 'Günlük etkin' : 'Bekliyor' ?></strong>
+            </span>
+            <span>
+                <small>Canlı varsayılan politika</small>
+                <strong>
+                    <?= ($geoStatus['policy_mode'] ?? '') === 'allow_only'
+                        ? 'Allow-only · diğer ülkeler engelli'
+                        : 'Mevcut UFW’ye devam' ?>
+                </strong>
+            </span>
+            <span>
+                <small>Yüklü CIDR</small>
+                <strong>
+                    IPv4 <?= (int) (($geoStatus['allow_ipv4'] ?? 0) + ($geoStatus['block_ipv4'] ?? 0)) ?>
+                    · IPv6 <?= (int) (($geoStatus['allow_ipv6'] ?? 0) + ($geoStatus['block_ipv6'] ?? 0)) ?>
+                </strong>
+            </span>
+        </div>
+
+        <label class="security-geoip-policy">
+            <span>
+                <strong>Varsayılan ülke politikası</strong>
+                <small>
+                    Allow-only seçildiğinde operatör/yönetim istisnaları ve izin verilen ülkeler
+                    dışındaki tüm SIP 5060 TCP/UDP ve SSH trafiği düşürülür.
+                </small>
+            </span>
+            <select id="geoipPolicyMode" name="geo_policy_mode">
+                <option value="allow_only" <?= $geoPolicyMode === 'allow_only' ? 'selected' : '' ?>>
+                    Yalnız izin verilen ülkeler · diğerlerini engelle
+                </option>
+                <option value="passthrough" <?= $geoPolicyMode === 'passthrough' ? 'selected' : '' ?>>
+                    Seçilmeyen ülkeleri mevcut UFW kurallarına bırak
+                </option>
+            </select>
+        </label>
+
+        <div class="security-geoip-toolbar">
+            <label>
+                <span>Kıta seçimi</span>
+                <select id="geoipContinent">
+                    <?php foreach ($geoContinents as $continentCode => $continent): ?>
+                        <option value="<?= e($continentCode) ?>"><?= e($continent['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label>
+                <span>Ülke ara</span>
+                <input id="geoipCountrySearch" type="search" placeholder="Türkiye, Almanya…" autocomplete="off">
+            </label>
+            <div class="security-geoip-legend">
+                <span><i class="allow"></i> İzin: ülkenin SIP ve SSH trafiğini kabul eder</span>
+                <span><i class="block"></i> Engel: ülkenin SIP ve SSH trafiğini düşürür</span>
+                <span id="geoipNeutralLegend"><i class="neutral"></i>
+                    Kural yok: <?= $geoPolicyMode === 'allow_only'
+                        ? 'SIP ve SSH trafiği varsayılan olarak engellenir'
+                        : 'mevcut UFW davranışı sürer' ?>
+                </span>
+            </div>
+        </div>
+
+        <div class="security-country-list" id="geoipCountryList">
+            <?php foreach ($geoContinents as $continentCode => $continent): ?>
+                <?php foreach ($continent['countries'] as $countryCode): ?>
+                    <?php
+                    $countryName = geoip_country_name($countryCode);
+                    $rule = $geoRulesByCountry[$countryCode] ?? [];
+                    $action = (string) ($rule['action'] ?? '');
+                    ?>
+                    <div class="security-country-row"
+                        data-continent="<?= e($continentCode) ?>"
+                        data-country="<?= e($countryCode) ?>"
+                        data-search="<?= e(mb_strtolower($countryName . ' ' . $countryCode, 'UTF-8')) ?>">
+                        <span class="security-country-name">
+                            <strong><?= e($countryName) ?></strong>
+                            <small><?= e($countryCode) ?></small>
+                        </span>
+                        <select data-geo-action aria-label="<?= e($countryName) ?> kuralı">
+                            <option value="" <?= $action === '' ? 'selected' : '' ?>>Kural yok</option>
+                            <option value="allow" <?= $action === 'allow' ? 'selected' : '' ?>>İzin ver</option>
+                            <option value="block" <?= $action === 'block' ? 'selected' : '' ?>>Engelle</option>
+                        </select>
+                        <label class="security-family-check">
+                            <input type="checkbox" data-geo-ipv4 <?= !empty($rule['ipv4']) ? 'checked' : '' ?>>
+                            IPv4
+                        </label>
+                        <label class="security-family-check">
+                            <input type="checkbox" data-geo-ipv6 <?= !empty($rule['ipv6']) ? 'checked' : '' ?>>
+                            IPv6
+                        </label>
+                    </div>
+                <?php endforeach; ?>
+            <?php endforeach; ?>
+        </div>
+
+        <div class="security-geoip-actions">
+            <div class="security-safety">
+                <strong>Atomik güncelleme</strong>
+                <span>Yeni listeler doğrulanmadan mevcut ipset listeleri ve güvenlik kuralları değiştirilmez.</span>
+            </div>
+            <span class="security-action-status" id="geoipActionStatus" role="status" aria-live="polite"></span>
+            <button class="btn" type="button" id="geoipUpdateNow">Listeleri şimdi güncelle</button>
+            <button class="btn primary" type="submit">Ülke kurallarını uygula</button>
         </div>
     </article>
 </form>

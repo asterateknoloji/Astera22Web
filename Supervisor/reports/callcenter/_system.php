@@ -81,6 +81,7 @@ try {
             $password = (string) ($_POST['password'] ?? '');
             $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
             if ($id === 0) {
+                license_assert_scoped_capacity('callcenter.agents', 1, $deptId);
                 if (strlen($password) < 10) {
                     throw new InvalidArgumentException('Yeni agent parolası en az 10 karakter olmalıdır.');
                 }
@@ -191,7 +192,7 @@ try {
                     if (strlen($password) < 10) {
                         throw new InvalidArgumentException('Parola en az 10 karakter olmalıdır.');
                     }
-                    $sql .= ',password_hash=:hash,must_change_password=TRUE';
+                    $sql .= ',password_hash=:hash,must_change_password=FALSE';
                     $params['hash'] = password_hash($password, PASSWORD_DEFAULT);
                 }
                 $statements = [
@@ -231,6 +232,7 @@ try {
                 }
                 callcenter_execute_batch($statements);
             } else {
+                license_assert_scoped_capacity('callcenter.supervisors', 1, $deptId);
                 $password = (string) ($_POST['password'] ?? '');
                 if (strlen($password) < 10) {
                     throw new InvalidArgumentException('Yeni kullanıcı parolası en az 10 karakter olmalıdır.');
@@ -290,6 +292,7 @@ if ($route === 'kuyruklistesi') {
     echo '</tbody></table></div>';
 } elseif ($route === 'agent_tanim') {
     $agents = callcenter_rows('SELECT a.agent_id,a.username,a.display_name,a.extension,a.status,string_agg(q.queue_id,\',\' ORDER BY q.queue_id) AS queues FROM callcenter_agents a LEFT JOIN callcenter_agent_queue_assignments q ON q.dept_id=a.dept_id AND q.agent_id=a.agent_id AND q.active WHERE a.dept_id=:dept GROUP BY a.agent_id ORDER BY a.display_name', ['dept' => $deptId]);
+    $agentLicense = license_capacity_view('callcenter.agents', 'Agent', $deptId);
     $extensions = array_values(array_filter(
         store_read('extensions'),
         static fn(array $extension): bool => (string) ($extension['dept'] ?? '') === $deptId
@@ -309,7 +312,10 @@ if ($route === 'kuyruklistesi') {
     }
     echo '<section class="agent-guide"><div><span class="eyebrow">AGENT YÖNETİMİ</span><h2>Agent hesabını üç adımda oluşturun</h2><p>Giriş bilgilerini yazın, mevcut bir dahili seçin ve çağrı karşılayacağı kuyrukları işaretleyin.</p></div>'
         . '<div class="agent-guide-stats"><span><strong>' . count($agents) . '</strong> Tanımlı Agent</span><span><strong>' . count($extensions) . '</strong> Kullanılabilir Dahili</span><span><strong>' . count($queues) . '</strong> Kuyruk</span></div></section>';
-    echo '<div class="card agent-create-card"><div class="card-header"><span class="step-number">1</span> Yeni Agent Bilgileri</div><div class="card-body">'
+    if (!empty($agentLicense['blocked'])) {
+        supervisor_notice((string) $agentLicense['message'], true);
+    }
+    echo '<div class="card agent-create-card"' . (!empty($agentLicense['blocked']) ? ' hidden' : '') . '><div class="card-header"><span class="step-number">1</span> Yeni Agent Bilgileri</div><div class="card-body">'
         . '<form method="post" class="agent-form"><input type="hidden" name="csrf" value="' . e(csrf_token()) . '">'
         . '<div class="agent-form-fields">'
         . '<label><span>Kullanıcı adı</span><small>Agent giriş ekranında kullanılacak</small><input name="username" placeholder="Örn. agent123" autocomplete="off" required></label>'
@@ -334,7 +340,9 @@ if ($route === 'kuyruklistesi') {
     }
     echo '</div></fieldset><div class="agent-submit"><span class="step-number">3</span><div><strong>Hazır</strong><small>Hesap oluşturulunca Agent seçilen kuyruklara giriş yapabilir.</small></div>'
         . '<button class="btn btn-primary" type="submit">Agent Oluştur</button></div></form></div></div>';
-    echo '<section class="agent-list-section"><div class="agent-list-heading"><div><h2>Tanımlı Agentlar</h2><p>Bilgileri, parolayı veya kuyruk atamalarını Agent kartından güncelleyin.</p></div><span class="badge">' . count($agents) . ' kayıt</span></div><div class="agent-card-grid">';
+    echo '<section class="agent-list-section"><div class="agent-list-heading"><div><h2>Tanımlı Agentlar</h2><p>Bilgileri, parolayı veya kuyruk atamalarını Agent kartından güncelleyin.</p></div>'
+        . '<label>Göster<select id="agentStatusFilter"><option value="active">Aktif Agentlar</option><option value="inactive">Pasif Agentlar</option><option value="all">Tümü</option></select></label>'
+        . '<span class="badge" id="agentFilterCount">' . count(array_filter($agents, static fn(array $row): bool => (string) ($row['status'] ?? '') !== 'inactive')) . ' kayıt</span></div><div class="agent-card-grid">';
     foreach ($agents as $agent) {
         $assigned = array_filter(explode(',', (string) $agent['queues']));
         $active = (string) $agent['status'] !== 'inactive';
@@ -343,7 +351,7 @@ if ($route === 'kuyruklistesi') {
             static fn(string $mode): string => $phoneModeLabels[$mode] ?? $mode,
             callcenter_extension_phone_modes($agentExtension)
         );
-        echo '<article class="agent-manage-card"><div class="agent-card-summary"><div class="agent-avatar">' . e(mb_strtoupper(mb_substr((string) $agent['display_name'], 0, 1))) . '</div>'
+        echo '<article class="agent-manage-card" data-agent-status="' . ($active ? 'active' : 'inactive') . '"><div class="agent-card-summary"><div class="agent-avatar">' . e(mb_strtoupper(mb_substr((string) $agent['display_name'], 0, 1))) . '</div>'
             . '<div class="agent-identity"><strong>' . e((string) $agent['display_name']) . '</strong><span>@' . e((string) $agent['username']) . '</span></div>'
             . '<span class="badge ' . ($active ? 'badge-success' : 'badge-danger') . '">' . ($active ? 'Aktif' : 'Pasif') . '</span></div>'
             . '<div class="agent-meta"><span><small>Dahili</small><strong>' . e((string) $agent['extension']) . '</strong></span><span><small>Telefon</small><strong>' . e(implode(' / ', $agentPhoneModes) ?: 'Tanımsız') . '</strong></span><span><small>Kuyruk</small><strong>' . count($assigned) . '</strong></span></div>'
@@ -387,7 +395,12 @@ if ($route === 'kuyruklistesi') {
     if (!$agents) {
         echo '<div class="empty">Henüz Agent tanımlanmamış. Yukarıdaki formdan ilk Agent hesabını oluşturun.</div>';
     }
-    echo '</div></section>';
+    echo '<div class="empty" id="agentFilterEmpty" hidden>Bu filtrede Agent bulunamadı.</div></div></section>'
+        . '<script>(function(){const filter=document.getElementById("agentStatusFilter");'
+        . 'const cards=[...document.querySelectorAll("[data-agent-status]")];'
+        . 'const count=document.getElementById("agentFilterCount");const empty=document.getElementById("agentFilterEmpty");'
+        . 'if(!filter)return;const apply=()=>{let visible=0;cards.forEach(card=>{const show=filter.value==="all"||card.dataset.agentStatus===filter.value;card.hidden=!show;if(show)visible++;});'
+        . 'count.textContent=visible+" kayıt";empty.hidden=visible!==0;};filter.addEventListener("change",apply);apply();})();</script>';
 } elseif ($route === 'mola_tanim') {
     $types = callcenter_rows('SELECT break_type_id,code,name,active,max_duration_seconds FROM callcenter_break_types WHERE dept_id=:dept ORDER BY name', ['dept' => $deptId]);
     $codePrefix = supervisor_break_code_prefix($deptId);
@@ -416,11 +429,15 @@ if ($route === 'kuyruklistesi') {
     $allDepartments = departments();
     $permissionDefinitions = callcenter_permission_definitions();
     $canManagePermissions = callcenter_supervisor_has_permission($supervisor, 'sistem_yetki');
+    $supervisorLicense = license_capacity_view('callcenter.supervisors', 'Supervisor', $deptId);
     $roleLabels = ['viewer' => 'Görüntüleyici', 'supervisor' => 'Supervisor', 'admin' => 'Yönetici'];
     echo '<div class="permission-guide"><div><strong>Görüntüleyici</strong><span>Raporları görüntüler, yönetim ayarlarını değiştiremez.</span></div>'
         . '<div><strong>Supervisor</strong><span>Operasyonu ve izin verilen kuyrukları yönetir.</span></div>'
         . '<div><strong>Yönetici</strong><span>Kullanıcı, sistem ve firma erişimlerini yönetir.</span></div></div>';
-    echo '<div class="card"><div class="card-header">Yeni Supervisor Kullanıcısı</div><div class="card-body"><form method="post" class="user-permission-form">'
+    if (!empty($supervisorLicense['blocked'])) {
+        supervisor_notice((string) $supervisorLicense['message'], true);
+    }
+    echo '<div class="card supervisor-create-card"' . (!empty($supervisorLicense['blocked']) ? ' hidden' : '') . '><div class="card-header">Yeni Supervisor Kullanıcısı</div><div class="card-body"><form method="post" class="user-permission-form">'
         . '<input type="hidden" name="csrf" value="' . e(csrf_token()) . '"><div class="form-grid">'
         . '<label>Kullanıcı adı<input name="username" placeholder="Giriş kullanıcı adı" required></label>'
         . '<label>Görünen ad<input name="display_name" placeholder="Ad Soyad" required></label>'

@@ -285,8 +285,9 @@ systemctl reload nginx
 systemctl enable asterisk
 systemctl restart asterisk
 
-for _ in {1..20}; do
-    if asterisk -rx 'core show version' 2>/dev/null | grep -q '^Asterisk '; then
+for _ in {1..30}; do
+    if asterisk -rx 'core waitfullybooted' 2>/dev/null \
+        | grep -Fq 'Asterisk has fully booted'; then
         break
     fi
     sleep 1
@@ -296,15 +297,26 @@ systemctl is-active --quiet asterisk || {
     journalctl -u asterisk -n 100 --no-pager || true
     die "Asterisk baslatilamadi."
 }
+asterisk -rx 'core waitfullybooted' 2>/dev/null \
+    | grep -Fq 'Asterisk has fully booted' \
+    || die "Asterisk 30 saniye icinde tam olarak acilamadi."
 
 for module_name in res_http_websocket.so res_pjsip_transport_websocket.so; do
-    if ! asterisk -rx "module show like $module_name" \
-        | grep -Fq "$module_name"; then
+    module_ready=0
+    for _ in {1..15}; do
+        if asterisk -rx "module show like $module_name" 2>/dev/null \
+            | grep -Fq "$module_name"; then
+            module_ready=1
+            break
+        fi
         asterisk -rx "module load $module_name" >/dev/null 2>&1 || true
-    fi
-    asterisk -rx "module show like $module_name" \
-        | grep -Fq "$module_name" \
-        || die "Asterisk modulu yuklenemedi: $module_name"
+        sleep 1
+    done
+    ((module_ready == 1)) || {
+        asterisk -rx "module load $module_name" 2>&1 || true
+        journalctl -u asterisk -n 100 --no-pager || true
+        die "Asterisk modulu yuklenemedi: $module_name"
+    }
 done
 
 HTTP_STATUS="$(asterisk -rx 'http show status' 2>&1 || true)"

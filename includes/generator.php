@@ -835,7 +835,10 @@ CONF;
         $outboundIdentityLines = "send_pai=yes\nsend_rpid=yes\ntrust_id_outbound=yes\n";
         $legacyInboundMode = $type === 'peer' ? 'direct' : 'routes';
         $inboundMode = (string) ($trunk['inbound_mode'] ?? $legacyInboundMode);
-        $inboundContext = $inboundMode === 'direct' ? ctx($dept, 'from') : 'from-pstn';
+        $signedLicense = (license_status($dept)['mode'] ?? 'legacy') === 'signed';
+        $inboundContext = $inboundMode === 'direct'
+            ? ($signedLicense ? 'from-trunk-' . dept_code_of($dept) : ctx($dept, 'from'))
+            : 'from-pstn';
         $out .= <<<CONF
 [{$id}]
 type=endpoint
@@ -1000,6 +1003,25 @@ function generate_standard_feature_dialplan(
     return $out;
 }
 
+function license_external_guard_context(): string
+{
+    return <<<'CONF'
+[astera-license-external]
+exten => s,1,Set(ASTERA_LICENSE_BLOCKED=0)
+ same => n,GotoIf($[${ARG4}=0]?blocked)
+ same => n,Set(GROUP(license_global)=external)
+ same => n,Set(ASTERA_LICENSE_GLOBAL_COUNT=${GROUP_COUNT(external@license_global)})
+ same => n,GotoIf($[${ARG2}>0 & ${ASTERA_LICENSE_GLOBAL_COUNT}>${ARG2}]?blocked)
+ same => n,Set(GROUP(license_dept)=external-${ARG1})
+ same => n,Set(ASTERA_LICENSE_DEPT_COUNT=${GROUP_COUNT(external-${ARG1}@license_dept)})
+ same => n,GotoIf($[${ARG3}>0 & ${ASTERA_LICENSE_DEPT_COUNT}>${ARG3}]?blocked)
+ same => n,Return()
+ same => n(blocked),Set(ASTERA_LICENSE_BLOCKED=1)
+ same => n,Return()
+
+CONF;
+}
+
 function generate_extensions(): string
 {
     $blocks = [];
@@ -1018,6 +1040,7 @@ function generate_extensions(): string
         $feat = ctx($id, 'feat');
         $sub = ctx($id, 'sub');
         $groupExternal = 'group-external-' . $code;
+        $trunkInbound = 'from-trunk-' . $code;
         $atxfer = 'atxfer-' . $code;
         $takeoverContext = 'takeover-' . $code;
         $monDir = '/var/spool/asterisk/monitor/' . $code;
@@ -1030,6 +1053,18 @@ function generate_extensions(): string
             $takeoverContext,
             $takeoverSettings
         );
+        $licenseFeature = 'concurrent.external_calls';
+        $licenseGlobalEnabled = license_feature_enabled($licenseFeature, null);
+        $licenseTenantOverride = license_has_tenant_entitlement($licenseFeature, $id);
+        $licenseTenantEnabled = !$licenseTenantOverride
+            || license_feature_enabled($licenseFeature, $id);
+        $licenseExternalAllowed = $licenseGlobalEnabled && $licenseTenantEnabled ? 1 : 0;
+        $licenseGlobalLimit = license_limit($licenseFeature, null) ?? 0;
+        $licenseTenantLimit = $licenseTenantOverride
+            ? (license_limit($licenseFeature, $id) ?? 0)
+            : 0;
+        $licenseGuard = "Gosub(astera-license-external,s,1({$code},"
+            . "{$licenseGlobalLimit},{$licenseTenantLimit},{$licenseExternalAllowed}))\n";
 
         $subBody = "exten => s,1,Set(CHANNEL(accountcode)={$code})\n";
         $subBody .= " same => n,Set(CDR(userfield)=\${IF(\$[\"\${ASTERA_TRANSFER_AUDIT}\" != \"\"]?\${ASTERA_TRANSFER_AUDIT}:{$code})})\n";
@@ -1299,7 +1334,10 @@ function generate_extensions(): string
             $language = ast_sanitize_id((string) ($g['language'] ?? 'tr')) ?: 'tr';
             $confirmCalls = !empty($g['confirm_calls']);
             $announcement = ast_quote((string) ($g['announcement'] ?? ''));
-            $musicClass = ast_quote((string) ($g['music_class'] ?? ''));
+            $mohFile = trim((string) ($g['moh_file'] ?? ''));
+            $musicClass = $mohFile !== ''
+                ? moh_file_class($id, $mohFile)
+                : ast_quote((string) ($g['music_class'] ?? ''));
             if ($musicClass === '' || $musicClass === 'default') {
                 $musicClass = $code;
             }
@@ -1580,7 +1618,9 @@ function generate_extensions(): string
             $outbound .= " same => n,GotoIf(\$[\"\${ASTERA_GROUP_EXTERNAL}\"=\"1\"]?outbound_allowed)\n";
             $outbound .= " same => n,GotoIf(\$[\"\${DB(OUTBOUND/{$code}/\${ASTERA_OUTBOUND_AUTH_EXT}/{$routeId})}\" = \"1\"]?outbound_allowed)\n";
             $outbound .= " same => n,__ASTERA_NEXT_OUTBOUND_ROUTE__\n";
-            $outbound .= " same => n(outbound_allowed),Set(OUTNUM={$dialnum})\n";
+            $outbound .= " same => n(outbound_allowed),{$licenseGuard}";
+            $outbound .= " same => n,GotoIf(\$[\"\${ASTERA_LICENSE_BLOCKED}\"=\"1\"]?license_limit)\n";
+            $outbound .= " same => n,Set(OUTNUM={$dialnum})\n";
             $outbound .= " same => n,Set(OUTNUM=\${FILTER(0-9,\${OUTNUM})})\n";
             $outbound .= " same => n,Set(CDR(cnum)=\${CALLERID(num)})\n";
             $outbound .= " same => n,Set(CDR(cnam)=\${CALLERID(name)})\n";
@@ -1711,7 +1751,9 @@ function generate_extensions(): string
                     }
                 }
             }
-            $outbound .= " same => n(outbound_done),Hangup()\n\n";
+            $outbound .= " same => n(outbound_done),Hangup()\n";
+            $outbound .= " same => n(license_limit),Playback(ss-noservice)\n";
+            $outbound .= " same => n,Hangup()\n\n";
             $outbound .= "exten => h,1,NoOp(Kontrollu transfer gecici bilgisi temizleniyor)\n";
             $outbound .= " same => n,NoOp(\${DB_DELETE(ATXFER/\${CHANNEL(linkedid)})})\n";
             $outbound .= " same => n,NoOp(\${DB_DELETE(ATXFERNAME/\${CHANNEL(linkedid)})})\n\n";
@@ -1778,6 +1820,8 @@ function generate_extensions(): string
             $recordValue = $recordMode === 'force' ? '1' : ($recordMode === 'off' ? '0' : '');
             $privacyManager = !empty($route['privacy_manager']);
             $inbound .= "exten => {$extensionKey},1,NoOp(Gelen {$code} {$name})\n";
+            $inbound .= " same => n,{$licenseGuard}";
+            $inbound .= " same => n,GotoIf(\$[\"\${ASTERA_LICENSE_BLOCKED}\"=\"1\"]?license_limit)\n";
             $inbound .= " same => n,Set(CHANNEL(language)={$language})\n";
             $inbound .= " same => n,Set(CHANNEL(musicclass)={$musicClass})\n";
             $inbound .= " same => n,Set(__ASTERA_ALERT_INFO={$alertInfo})\n";
@@ -1799,6 +1843,8 @@ function generate_extensions(): string
                 $inbound .= " same => n,Wait({$pause})\n";
             }
             $inbound .= dest_goto($id, $destType, $dest, $int);
+            $inbound .= " same => n(license_limit),Playback(ss-noservice)\n";
+            $inbound .= " same => n,Hangup()\n";
             if ($privacyManager) {
                 $inbound .= " same => n(privacyfailed),Hangup()\n";
             }
@@ -1821,6 +1867,12 @@ function generate_extensions(): string
 [{$sub}]
 {$subBody}
 {$takeoverDialplan['context']}
+[{$trunkInbound}]
+exten => _.,1,{$licenseGuard} same => n,GotoIf($["\${ASTERA_LICENSE_BLOCKED}"="1"]?license_limit)
+ same => n,Goto({$from},\${EXTEN},1)
+ same => n(license_limit),Playback(ss-noservice)
+ same => n,Hangup()
+
 [{$from}]
 include => {$int}
 include => {$outC}
@@ -1868,6 +1920,7 @@ exten => _X.,1,NoOp(Kontrollu transfer hedefi \${EXTEN})
 CONF;
     }
 
+    $blocks[] = license_external_guard_context();
     $blocks[] = <<<'CONF'
 [astera-pri-denoise]
 exten => s,1,Set(DENOISE(tx)=on)
@@ -1912,6 +1965,10 @@ function generate_queues(): string
         $leaveempty = in_array(($q['leavewhenempty'] ?? 'no'), ['yes', 'no', 'strict'], true) ? $q['leavewhenempty'] : 'no';
         $autopause = in_array(($q['autopause'] ?? 'no'), ['yes', 'no', 'all'], true) ? $q['autopause'] : 'no';
         $announceFrequency = max(0, min(3600, (int) ($q['announce_frequency'] ?? 60)));
+        $announcePositionStartDelay = max(
+            0,
+            min(3600, (int) ($q['announce_position_startdelay'] ?? $announceFrequency))
+        );
         $minAnnounceFrequency = max(0, min(3600, (int) ($q['min_announce_frequency'] ?? 15)));
         $positionLimit = max(0, min(999, (int) ($q['announce_position_limit'] ?? 0)));
         $holdtime = in_array(($q['announce_holdtime'] ?? 'no'), ['yes', 'no', 'once'], true) ? $q['announce_holdtime'] : 'no';
@@ -1920,7 +1977,10 @@ function generate_queues(): string
             : 10;
         $periodic = ast_quote((string) ($q['periodic_announce'] ?? ''));
         $periodicFrequency = max(0, min(86400, (int) ($q['periodic_announce_frequency'] ?? 60)));
-        $moh = ast_sanitize_id((string) ($q['musicclass'] ?? dept_code_of($dept))) ?: ast_sanitize_id(dept_code_of($dept));
+        $mohFile = trim((string) ($q['moh_file'] ?? ''));
+        $moh = $mohFile !== ''
+            ? moh_file_class($dept, $mohFile)
+            : (ast_sanitize_id((string) ($q['musicclass'] ?? $dept)) ?: $dept);
         $out .= "[{$id}]\n";
         $out .= "strategy={$strategy}\n";
         $out .= "timeout={$timeout}\n";
@@ -1947,6 +2007,7 @@ function generate_queues(): string
         $out .= "musicclass={$moh}\n";
         $out .= "announce-position=" . (!empty($q['announce_position']) ? 'yes' : 'no') . "\n";
         $out .= "announce-frequency={$announceFrequency}\n";
+        $out .= "announce-position-startdelay={$announcePositionStartDelay}\n";
         $out .= "min-announce-frequency={$minAnnounceFrequency}\n";
         $out .= "announce-holdtime={$holdtime}\n";
         $out .= "announce-round-seconds={$round}\n";
@@ -2558,7 +2619,32 @@ sort=random
 
 CONF;
     }
+    $selected = [];
+    foreach (array_merge(store_read('queues'), store_read('ringgroups')) as $row) {
+        $dept = (string) ($row['dept'] ?? '');
+        $path = trim((string) ($row['moh_file'] ?? ''));
+        if ($dept === '' || $path === '') {
+            continue;
+        }
+        $class = moh_file_class($dept, $path);
+        $selected[$class] = true;
+    }
+    foreach (array_keys($selected) as $class) {
+        $out .= <<<CONF
+[{$class}]
+mode=files
+directory=/var/lib/asterisk/moh/.astera-classes/{$class}
+sort=alpha
+
+CONF;
+    }
     return $out;
+}
+
+function moh_file_class(string $dept, string $path): string
+{
+    $code = dept_code_of($dept);
+    return 'astera-' . ($code !== '' ? $code : 'dept') . '-' . substr(sha1($path), 0, 12);
 }
 
 function generate_features_conf(): string

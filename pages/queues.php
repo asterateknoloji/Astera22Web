@@ -11,6 +11,13 @@ $defaultNotificationSubject = '[Astera Santral ve Callcenter] Kaçan çağrı - 
 $defaultNotificationBody = "Astera Santral ve Callcenter\n\nKaçan çağrı bildirimi\n\n"
     . "Kuyruk Adı: {kuyruk}\nNumara: {numara}\nTarih / Saat: {tarih} {saat}\n"
     . "Kaçtığı Sıra: {sira}\nBekleme Süresi: {bekleme} sn\nSantral: {santral}";
+$queueLicense = license_capacity_view('callcenter.queues', 'Kuyruk', current_dept_id());
+$mohFiles = [];
+try {
+    $mohFiles = pbx_moh_files(current_dept_id());
+} catch (Throwable) {
+    $mohFiles = [];
+}
 try {
     foreach (callcenter_rows(
         'SELECT dept_id,queue_id,email FROM callcenter_queue_notification_recipients '
@@ -134,5 +141,7 @@ foreach (departments() as $department) {
 window.ASTERA = window.ASTERA || {};
 window.ASTERA.exts = <?= json_encode($exts, JSON_UNESCAPED_UNICODE) ?>;
 window.ASTERA.strategies = <?= json_encode($strategies, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.mohFiles = <?= json_encode($mohFiles, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.queueLicense = <?= json_encode($queueLicense, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 document.addEventListener('DOMContentLoaded', () => Astera.pageQueues());
 </script>

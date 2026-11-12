@@ -21,7 +21,7 @@ BEGIN
         'admin',
         TRUE,
         FALSE,
-        TRUE
+        FALSE
     )
     ON CONFLICT (dept_id, username) DO NOTHING;
     RETURN NEW;
@@ -45,7 +45,7 @@ SELECT
     'admin',
     TRUE,
     FALSE,
-    TRUE
+    FALSE
 FROM astera_tenants AS tenant
 WHERE tenant.active
 ON CONFLICT (dept_id, username) DO NOTHING;

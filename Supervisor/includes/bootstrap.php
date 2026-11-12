@@ -12,10 +12,6 @@ if (empty($_SESSION['callcenter_supervisor'])) {
 }
 
 $supervisor = (array) $_SESSION['callcenter_supervisor'];
-if (!empty($supervisor['must_change_password'])) {
-    header('Location: ' . (str_contains($_SERVER['SCRIPT_NAME'] ?? '', '/reports/') ? '../../change_password.php' : 'change_password.php'));
-    exit;
-}
 
 $ownerDeptId = (string) $supervisor['dept_id'];
 $deptId = (string) ($_SESSION['callcenter_supervisor_dept'] ?? $ownerDeptId);
@@ -249,6 +245,8 @@ function supervisor_page_start(string $title, string $back = '../../dashboard.ph
     if ($back !== '') {
         echo '<a class="btn btn-outline" href="' . e($back) . '">' . ui_icon('arrow-left') . ' Geri</a>';
     }
+    echo '<a class="btn btn-outline" href="' . e(supervisor_nav_path('change_password.php'))
+        . '">' . ui_icon('key-round') . ' Parola</a>';
     echo '<form method="post" action="' . e(supervisor_nav_path('logout.php')) . '"><input type="hidden" name="csrf" value="'
         . e(csrf_token()) . '"><button class="icon-button" type="submit" title="Çıkış" aria-label="Çıkış">' . ui_icon('log-out') . '</button></form>';
     echo '</div></header><main class="dashboard-container">';

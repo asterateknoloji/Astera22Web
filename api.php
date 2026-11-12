@@ -338,6 +338,65 @@ function pri_detected_spans(string $output): array
 
 try {
     switch ($action) {
+        case 'license_import':
+            if (!is_super()) {
+                json_out(['ok' => false, 'error' => 'Sadece sistem yöneticisi'], 403);
+            }
+            $envelope = trim((string) ($_POST['license_envelope'] ?? ''));
+            if ($envelope === '' || strlen($envelope) > 1048576) {
+                json_out(['ok' => false, 'error' => 'Lisans zarfı boş veya çok büyük'], 422);
+            }
+            try {
+                $status = license_import_envelope($envelope);
+            } catch (JsonException|InvalidArgumentException $exception) {
+                json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+            }
+            json_out([
+                'ok' => true,
+                'message' => 'İmzalı lisans doğrulandı ve etkinleştirildi',
+                'status' => $status,
+            ]);
+
+        case 'license_issuer_customer_save':
+            if (!is_super() || !license_issuer_enabled()) {
+                json_out(['ok' => false, 'error' => 'Vendor lisans yöneticisi etkin değil'], 403);
+            }
+            try {
+                $customerId = license_issuer_save_customer($_POST);
+            } catch (InvalidArgumentException $exception) {
+                json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+            }
+            json_out(['ok' => true, 'customer_id' => $customerId, 'message' => 'Müşteri kaydedildi']);
+
+        case 'license_issuer_issue':
+        case 'license_issuer_renew':
+            if (!is_super() || !license_issuer_enabled()) {
+                json_out(['ok' => false, 'error' => 'Vendor lisans yöneticisi etkin değil'], 403);
+            }
+            try {
+                $previousId = (int) ($_POST['previous_document_id'] ?? 0);
+                $result = $action === 'license_issuer_renew'
+                    ? license_issuer_renew($previousId, $_POST)
+                    : license_issuer_issue($_POST);
+            } catch (InvalidArgumentException|JsonException $exception) {
+                json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+            }
+            json_out(array_merge(['ok' => true, 'message' => 'İmzalı lisans üretildi'], $result));
+
+        case 'license_issuer_revoke':
+            if (!is_super() || !license_issuer_enabled()) {
+                json_out(['ok' => false, 'error' => 'Vendor lisans yöneticisi etkin değil'], 403);
+            }
+            try {
+                license_issuer_revoke(
+                    (int) ($_POST['document_id'] ?? 0),
+                    (string) ($_POST['reason'] ?? '')
+                );
+            } catch (InvalidArgumentException $exception) {
+                json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+            }
+            json_out(['ok' => true, 'message' => 'Lisans iptal edildi']);
+
         case 'ami_user_save':
             if (!is_super()) {
                 json_out(['ok' => false, 'error' => 'Sadece sistem yöneticisi'], 403);
@@ -1155,6 +1214,15 @@ try {
             if ($panelUser !== '' && $panelPass === '') {
                 json_out(['ok' => false, 'error' => 'Firma paneli kullanıcısı için parola zorunludur'], 422);
             }
+            $supervisorPassword = (string) ($_POST['supervisor_password'] ?? '');
+            if ($supervisorPassword !== '' && (
+                strlen($supervisorPassword) < 8 || strlen($supervisorPassword) > 256
+            )) {
+                json_out([
+                    'ok' => false,
+                    'error' => 'Supervisor parolası 8-256 karakter arasında olmalıdır',
+                ], 422);
+            }
             $extensionLimit = max(0, min(100000, (int) ($_POST['extension_limit'] ?? 0)));
             $extensionCount = department_extension_count($id);
             if ($extensionLimit > 0 && $extensionLimit < $extensionCount) {
@@ -1174,6 +1242,35 @@ try {
                 'extension_limit' => $extensionLimit,
             ], 'id');
             crm_ensure_tenant($id);
+            if ($supervisorPassword !== '') {
+                require_once __DIR__ . '/includes/callcenter.php';
+                $supervisorHash = password_hash($supervisorPassword, PASSWORD_DEFAULT);
+                if (!is_string($supervisorHash)) {
+                    throw new RuntimeException('Supervisor parolası güvenli biçimde hazırlanamadı');
+                }
+                callcenter_execute(
+                    "INSERT INTO callcenter_supervisor_users "
+                    . "(dept_id,username,display_name,password_hash,role,active,"
+                    . "can_choose_tenant,must_change_password) "
+                    . "VALUES (:dept,'admin','Firma Yöneticisi',:hash,'admin',TRUE,FALSE,FALSE) "
+                    . "ON CONFLICT (dept_id,username) DO UPDATE SET "
+                    . "password_hash=EXCLUDED.password_hash,active=TRUE,"
+                    . "must_change_password=FALSE,updated_at=now()",
+                    ['dept' => $id, 'hash' => $supervisorHash]
+                );
+                callcenter_audit_write(
+                    [
+                        'dept_id' => $id,
+                        'username' => (string) ($_SESSION['user'] ?? 'santral-admin'),
+                    ],
+                    'update',
+                    'supervisor_password',
+                    'Supervisor yönetici parolası santral panelinden değiştirildi',
+                    '',
+                    'auth',
+                    '/index.php?p=departments'
+                );
+            }
             json_out(array_merge(['ok' => true], apply_to_pbx()));
 
         case 'department_delete':
@@ -2691,7 +2788,7 @@ try {
                 'priority' => max(0, min(9999, (int) ($_POST['priority'] ?? 100))),
                 'cid_prefix' => str_replace(["\r", "\n"], '', trim((string) ($_POST['cid_prefix'] ?? ''))),
                 'alert_info' => str_replace(["\r", "\n"], '', trim((string) ($_POST['alert_info'] ?? ''))),
-                'musicclass' => ast_sanitize_id((string) ($_POST['musicclass'] ?? dept_code_of($dept))) ?: dept_code_of($dept),
+                'musicclass' => ast_sanitize_id((string) ($_POST['musicclass'] ?? 'default')) ?: 'default',
                 'language' => ast_sanitize_id((string) ($_POST['language'] ?? 'tr')) ?: 'tr',
                 'signal_ringing' => !empty($_POST['signal_ringing']),
                 'pause_before_answer' => max(0, min(30, (int) ($_POST['pause_before_answer'] ?? 0))),
@@ -2719,6 +2816,13 @@ try {
             }
             $id = str_starts_with($local, $dept . '-') ? $local : ($dept . '-' . $local);
             $oldQueue = find_by('queues', 'id', $id);
+            if (!$oldQueue) {
+                try {
+                    license_assert_scoped_capacity('callcenter.queues', 1, $dept);
+                } catch (RuntimeException $exception) {
+                    json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+                }
+            }
             $exten = preg_replace('/\D/', '', (string) ($_POST['exten'] ?? '')) ?? '';
             if ($exten === '') {
                 $exten = preg_replace('/\D/', '', (string) ($oldQueue['exten'] ?? '')) ?? '';
@@ -2842,6 +2946,18 @@ try {
             if ($missedCallBody === '' || mb_strlen($missedCallBody, 'UTF-8') > 8000) {
                 json_out(['ok' => false, 'error' => 'Mail içeriği 1-8000 karakter olmalıdır'], 422);
             }
+            $mohFile = trim((string) ($_POST['moh_file'] ?? ''));
+            $musicClass = dept_code_of($dept);
+            if ($mohFile !== '') {
+                $mohSync = pbx_sync_moh_selection($dept, $mohFile);
+                if (empty($mohSync['ok'])) {
+                    json_out([
+                        'ok' => false,
+                        'error' => (string) ($mohSync['output'] ?? 'Bekleme müziği seçilemedi'),
+                    ], 422);
+                }
+                $musicClass = (string) ($mohSync['class'] ?? $musicClass);
+            }
             store_upsert('queues', [
                 'id' => $id,
                 'dept' => $dept,
@@ -2859,7 +2975,8 @@ try {
                 'servicelevel' => max(1, min(86400, (int) ($_POST['servicelevel'] ?? 60))),
                 'weight' => max(0, min(100, (int) ($_POST['weight'] ?? 0))),
                 'memberdelay' => max(0, min(60, (int) ($_POST['memberdelay'] ?? 0))),
-                'musicclass' => ast_sanitize_id((string) ($_POST['musicclass'] ?? dept_code_of($dept))) ?: dept_code_of($dept),
+                'musicclass' => $musicClass,
+                'moh_file' => $mohFile,
                 'cid_prefix' => trim((string) ($_POST['cid_prefix'] ?? '')),
                 'joinempty' => $joinempty,
                 'leavewhenempty' => $leavewhenempty,
@@ -2877,6 +2994,10 @@ try {
                 'announce' => $announce,
                 'announce_position' => !empty($_POST['announce_position']),
                 'announce_frequency' => max(0, min(3600, (int) ($_POST['announce_frequency'] ?? 60))),
+                'announce_position_startdelay' => max(
+                    0,
+                    min(3600, (int) ($_POST['announce_position_startdelay'] ?? 60))
+                ),
                 'min_announce_frequency' => max(0, min(3600, (int) ($_POST['min_announce_frequency'] ?? 15))),
                 'announce_holdtime' => $holdtime,
                 'announce_round_seconds' => $round,
@@ -2963,6 +3084,11 @@ try {
                 $id = (string) ($existing['id'] ?? '');
             } else {
                 $id = '';
+                try {
+                    license_assert_scoped_capacity('callcenter.ringgroups', 1, $dept);
+                } catch (RuntimeException $exception) {
+                    json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+                }
             }
             $exten = preg_replace('/\D/', '', (string) ($existing['exten'] ?? '')) ?? '';
             if ($exten === '') {
@@ -3034,6 +3160,18 @@ try {
             if (!tenant_sound_allowed($dept, $announcement)) {
                 json_out(['ok' => false, 'error' => 'Seçilen ses bu firmaya ait değil'], 422);
             }
+            $mohFile = trim((string) ($_POST['moh_file'] ?? ''));
+            $musicClass = dept_code_of($dept);
+            if ($mohFile !== '') {
+                $mohSync = pbx_sync_moh_selection($dept, $mohFile);
+                if (empty($mohSync['ok'])) {
+                    json_out([
+                        'ok' => false,
+                        'error' => (string) ($mohSync['output'] ?? 'Bekleme müziği seçilemedi'),
+                    ], 422);
+                }
+                $musicClass = (string) ($mohSync['class'] ?? $musicClass);
+            }
             store_upsert('ringgroups', [
                 'id' => $id,
                 'dept' => $dept,
@@ -3045,7 +3183,8 @@ try {
                 'ring_time' => max(5, (int) ($_POST['ring_time'] ?? 20)),
                 'confirm_calls' => !empty($_POST['confirm_calls']),
                 'announcement' => $announcement,
-                'music_class' => trim((string) ($_POST['music_class'] ?? dept_code_of($dept))) ?: dept_code_of($dept),
+                'music_class' => $musicClass,
+                'moh_file' => $mohFile,
                 'cid_prefix' => trim((string) ($_POST['cid_prefix'] ?? '')),
                 'skip_busy' => !empty($_POST['skip_busy']),
                 'record' => !empty($_POST['record']),
@@ -3082,6 +3221,11 @@ try {
                 $id = (string) ($existing['id'] ?? '');
             } else {
                 $id = '';
+                try {
+                    license_assert_scoped_capacity('ivr.enabled', 1, $dept);
+                } catch (RuntimeException $exception) {
+                    json_out(['ok' => false, 'error' => $exception->getMessage()], 422);
+                }
             }
             $exten = preg_replace('/\D/', '', (string) ($existing['exten'] ?? '')) ?? '';
             if ($exten === '') {
@@ -4111,10 +4255,16 @@ try {
             $applyUnit = 'astera-network-apply-' . $token;
             $applyPath = '/tmp/' . $applyUnit . '.sh';
             $rollbackPath = '/tmp/' . $rollbackUnit . '.sh';
+            $staticNetplan = '/etc/netplan/01-astera-static.yaml';
+            $staticNetplanBackup = '/var/backups/astera-network/' . $token . '-01-astera-static.yaml';
             $rollbackScript = "#!/bin/bash\nset -e\n"
+                . 'if [ -f ' . escapeshellarg($staticNetplanBackup) . ' ]; then install -m 0600 '
+                . escapeshellarg($staticNetplanBackup) . ' ' . escapeshellarg($staticNetplan) . "; fi\n"
                 . 'nmcli connection delete uuid ' . escapeshellarg($uuid) . " >/dev/null 2>&1 || true\n"
                 . 'nmcli connection clone id ' . escapeshellarg($backupName) . ' '
                 . escapeshellarg($connectionName) . " >/dev/null\n"
+                . 'nmcli connection modify id ' . escapeshellarg($connectionName)
+                . " connection.autoconnect yes >/dev/null\n"
                 . 'nmcli connection delete id ' . escapeshellarg($backupName) . " >/dev/null 2>&1 || true\n"
                 . 'nmcli connection up id ' . escapeshellarg($connectionName) . "\n"
                 . 'printf %s ' . escapeshellarg(base64_encode(
@@ -4125,7 +4275,7 @@ try {
                 . escapeshellarg(PBX_DB_NAME) . " >/dev/null\n"
                 . 'rm -f ' . escapeshellarg($rollbackPath) . "\n";
             $modify = 'nmcli connection modify uuid ' . escapeshellarg($uuid)
-                . ' connection.autoconnect yes 802-3-ethernet.mtu ' . (int) $setting['mtu'];
+                . " connection.autoconnect yes ipv4.routes '' 802-3-ethernet.mtu " . (int) $setting['mtu'];
             if ($setting['method'] === 'dhcp') {
                 $modify .= " ipv4.method auto ipv4.addresses '' ipv4.gateway '' ipv4.dns ''"
                     . ' ipv4.ignore-auto-dns no';
@@ -4139,8 +4289,11 @@ try {
                 . 'trap ' . escapeshellarg('rm -f ' . $applyPath) . " EXIT\n"
                 . 'nmcli connection clone uuid ' . escapeshellarg($uuid) . ' '
                 . escapeshellarg($backupName) . " >/dev/null\n"
+                . 'nmcli connection modify id ' . escapeshellarg($backupName)
+                . " connection.autoconnect no >/dev/null\n"
                 . 'systemd-run --quiet --unit=' . escapeshellarg($rollbackUnit)
                 . ' --on-active=3m /bin/bash ' . escapeshellarg($rollbackPath) . "\n"
+                . network_static_netplan_detach_script($interface, $staticNetplan, $staticNetplanBackup)
                 . $modify . "\n"
                 . 'if ! nmcli connection up uuid ' . escapeshellarg($uuid) . "; then\n"
                 . '  systemctl stop ' . escapeshellarg($rollbackUnit . '.timer') . " 2>/dev/null || true\n"
@@ -4282,6 +4435,8 @@ SH;
             }
             $rollbackUnit = 'astera-firewall-rollback-' . date('YmdHis');
             $commands[] = 'ufw --force enable';
+            $commands[] = 'if [ -x /usr/local/sbin/astera-geoip ]; then '
+                . '/usr/local/sbin/astera-geoip firewall; fi';
             $commands[] = 'if systemctl list-unit-files astera-network-routes.service --no-legend 2>/dev/null'
                 . " | grep -q '^astera-network-routes\\.service'; then "
                 . 'systemctl reload astera-network-routes.service; fi';
@@ -4307,6 +4462,102 @@ SH;
                 'rollback_unit' => $rollbackUnit,
                 'error' => !empty($res['ok']) ? null : 'Güvenlik duvarı uygulanamadı',
             ], !empty($res['ok']) ? 200 : 422);
+
+        case 'security_geoip_apply':
+            if (!is_super()) {
+                json_out(['ok' => false, 'error' => 'Sadece sistem yöneticisi'], 403);
+            }
+            $policyMode = geoip_normalize_policy_mode($_POST['geo_policy_mode'] ?? 'allow_only');
+            $rules = geoip_normalize_rules($_POST['geo_rules'] ?? '[]');
+            $sets = geoip_rules_by_set($rules);
+            if ($policyMode === 'allow_only'
+                && (!$sets['allow_ipv4'] || !$sets['allow_ipv6'])) {
+                json_out([
+                    'ok' => false,
+                    'error' => 'Allow-only modunda IPv4 ve IPv6 için en az bir izinli ülke seçilmelidir',
+                ], 422);
+            }
+            $settings = find_by('security_settings', 'id', 'firewall') ?? ['id' => 'firewall'];
+            $trustedNetworks = array_values(array_unique(array_merge(
+                (array) ($settings['management_networks'] ?? []),
+                (array) ($settings['sip_networks'] ?? [])
+            )));
+            $currentIp = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+            if (filter_var($currentIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+                $trustedNetworks[] = $currentIp . '/32';
+            }
+            $trustedNetworks = array_values(array_filter(
+                array_unique($trustedNetworks),
+                static fn (mixed $network): bool =>
+                    preg_match('/^[0-9a-fA-F:.,\/-]+$/D', (string) $network) === 1
+            ));
+
+            $install = geoip_install_remote_helper();
+            if (empty($install['ok'])) {
+                json_out([
+                    'ok' => false,
+                    'error' => 'GeoIP altyapısı kurulamadı',
+                    'output' => (string) ($install['output'] ?? ''),
+                ], 422);
+            }
+            $geoConfig = implode("\n", [
+                'POLICY_MODE=' . escapeshellarg($policyMode),
+                'ALLOW_IPV4=' . escapeshellarg(implode(',', $sets['allow_ipv4'])),
+                'BLOCK_IPV4=' . escapeshellarg(implode(',', $sets['block_ipv4'])),
+                'ALLOW_IPV6=' . escapeshellarg(implode(',', $sets['allow_ipv6'])),
+                'BLOCK_IPV6=' . escapeshellarg(implode(',', $sets['block_ipv6'])),
+                'TRUSTED_NETWORKS=' . escapeshellarg(implode(',', $trustedNetworks)),
+                '',
+            ]);
+            $apply = pbx_ssh(
+                'set -e; install -d -o root -g root -m 0750 /etc/astera; '
+                . 'printf %s ' . escapeshellarg(base64_encode($geoConfig))
+                . ' | base64 -d > /etc/astera/geoip.conf; '
+                . 'chown root:root /etc/astera/geoip.conf; chmod 0600 /etc/astera/geoip.conf; '
+                . '/usr/local/sbin/astera-geoip update'
+            );
+            if (empty($apply['ok'])) {
+                json_out([
+                    'ok' => false,
+                    'error' => 'Ülke listeleri uygulanamadı; mevcut ipset listeleri korunuyor',
+                    'output' => (string) ($apply['output'] ?? ''),
+                ], 422);
+            }
+            $settings['geoip_rules'] = $rules;
+            $settings['geoip_policy_mode'] = $policyMode;
+            $settings['geoip_updated_at'] = date(DATE_ATOM);
+            $settings['geoip_updated_by'] = store_actor();
+            store_upsert('security_settings', $settings, 'id');
+            json_out([
+                'ok' => true,
+                'message' => 'SIP 5060 ve SSH ülke kuralları uygulandı',
+                'output' => (string) ($apply['output'] ?? ''),
+                'status' => geoip_remote_status(),
+            ]);
+
+        case 'security_geoip_update':
+            if (!is_super()) {
+                json_out(['ok' => false, 'error' => 'Sadece sistem yöneticisi'], 403);
+            }
+            $status = geoip_remote_status();
+            if (empty($status['installed'])) {
+                $install = geoip_install_remote_helper();
+                if (empty($install['ok'])) {
+                    json_out([
+                        'ok' => false,
+                        'error' => 'GeoIP altyapısı kurulamadı',
+                        'output' => (string) ($install['output'] ?? ''),
+                    ], 422);
+                }
+            }
+            $update = pbx_ssh('/usr/local/sbin/astera-geoip update');
+            json_out([
+                'ok' => !empty($update['ok']),
+                'message' => !empty($update['ok']) ? 'GeoIP listeleri güncellendi' : null,
+                'error' => !empty($update['ok']) ? null : 'GeoIP listeleri güncellenemedi',
+                'output' => (string) ($update['output'] ?? ''),
+                'status' => geoip_remote_status(),
+            ], !empty($update['ok']) ? 200 : 422);
 
         case 'security_firewall_confirm':
             if (!is_super()) {

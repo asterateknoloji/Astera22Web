@@ -95,6 +95,49 @@ function network_ipv4_network_cidr(string $cidr): string
     return long2ip($value & $mask) . '/' . $prefix;
 }
 
+/**
+ * The installer writes the first static address to 01-astera-static.yaml.
+ * netplan merges that file with NetworkManager's own 90-NM-*.yaml profile, so
+ * leaving the interface there keeps the old static address next to the new one.
+ */
+function network_static_netplan_detach_script(string $interface, string $path, string $backupPath): string
+{
+    $python = <<<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+interface = sys.argv[2]
+lines = path.read_text(encoding="utf-8").splitlines()
+header = "    " + interface + ":"
+kept = []
+skipping = False
+for line in lines:
+    if line == header:
+        skipping = True
+        continue
+    if skipping:
+        if not line.strip() or line.startswith("      "):
+            continue
+        skipping = False
+    kept.append(line)
+has_interfaces = any(
+    line.startswith("    ") and not line.startswith("     ") and line.rstrip().endswith(":")
+    for line in kept
+)
+if has_interfaces:
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+else:
+    path.unlink()
+PY;
+    return 'if [ -f ' . escapeshellarg($path) . " ]; then\n"
+        . '  install -d -m 0700 ' . escapeshellarg(dirname($backupPath)) . "\n"
+        . '  cp -a ' . escapeshellarg($path) . ' ' . escapeshellarg($backupPath) . "\n"
+        . '  python3 - ' . escapeshellarg($path) . ' ' . escapeshellarg($interface)
+        . " <<'ASTERA_NETPLAN_DETACH'\n" . $python . "\nASTERA_NETPLAN_DETACH\n"
+        . "fi\n";
+}
+
 function network_sync_pbx_identity(string $interface, string $ipv4Cidr): void
 {
     $interface = network_interface_name($interface);

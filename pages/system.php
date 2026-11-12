@@ -123,14 +123,31 @@ $alarmBool = static fn(mixed $value): bool =>
     <pre class="log"><?= e(trim($cli . "\n" . $uptime . "\n" . $transports)) ?></pre>
 </article>
 <script>
+const normalizePowerConfirmation = value => String(value || '')
+    .replace(/[İıi]/g, 'I')
+    .replace(/[Şş]/g, 'S')
+    .replace(/[Ğğ]/g, 'G')
+    .replace(/[Üü]/g, 'U')
+    .replace(/[Öö]/g, 'O')
+    .replace(/[Çç]/g, 'C')
+    .toUpperCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+
 document.querySelectorAll('[data-system-power-form]').forEach(form => {
     form.addEventListener('submit', event => {
         event.preventDefault();
         const confirmation = form.dataset.confirmation;
         const entered = prompt(`Aktif görüşmeler kesilecek. Devam etmek için ${confirmation} yazın:`);
-        if (entered !== confirmation) {
-            if (entered !== null) alert('Onay metni eşleşmedi; işlem iptal edildi.');
+        if (entered === null) return;
+        if (normalizePowerConfirmation(entered) !== confirmation) {
+            alert(`Onay metni eşleşmedi; işlem yapılmadı.\nYazılan: ${entered}\nBeklenen: ${confirmation}`);
             return;
+        }
+        const button = form.querySelector('button[type="submit"]');
+        if (button) {
+            button.disabled = true;
+            button.textContent = 'İşlem başlatılıyor, lütfen bekleyin...';
         }
         form.elements.confirmation.value = confirmation;
         form.submit();

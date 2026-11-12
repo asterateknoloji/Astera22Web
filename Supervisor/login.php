@@ -36,9 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'auth',
                 '/Supervisor/login.php'
             );
-            header('Location: ' . (!empty($user['must_change_password'])
-                ? 'change_password.php'
-                : 'dashboard.php'));
+            header('Location: dashboard.php');
             exit;
         }
         $error = 'Giriş bilgileri geçersiz.';
@@ -85,5 +83,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </section>
     <div class="auth-foot"><?= ui_icon('shield-check') ?> © 2026 Astera Call Center · Güvenli yönetim alanı</div>
 </main>
+<script>
+(() => {
+    const department = document.getElementById('dept');
+    if (!department) return;
+
+    const storageKey = 'astera-supervisor-last-department';
+    if (!department.value) {
+        const lastDepartment = localStorage.getItem(storageKey);
+        if (lastDepartment && department.querySelector(`option[value="${CSS.escape(lastDepartment)}"]`)) {
+            department.value = lastDepartment;
+        }
+    }
+
+    department.addEventListener('change', () => {
+        if (department.value) {
+            localStorage.setItem(storageKey, department.value);
+        } else {
+            localStorage.removeItem(storageKey);
+        }
+    });
+})();
+</script>
 </body>
 </html>

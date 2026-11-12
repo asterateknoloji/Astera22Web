@@ -1,6 +1,7 @@
 <?php
 $rows = scoped('ivrs');
 $showDept = current_dept_id() === null;
+$ivrLicense = license_capacity_view('ivr.enabled', 'IVR', current_dept_id());
 $extensions = array_map(static fn(array $row): array => [
     'exten' => (string) ($row['exten'] ?? ''),
     'name' => (string) ($row['name'] ?? ''),
@@ -49,5 +50,6 @@ $extensions = array_map(static fn(array $row): array => [
 <script>
 window.ASTERA = window.ASTERA || {};
 window.ASTERA.exts = <?= json_encode($extensions, JSON_UNESCAPED_UNICODE) ?>;
+window.ASTERA.ivrLicense = <?= json_encode($ivrLicense, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 document.addEventListener('DOMContentLoaded', () => Astera.pageIvr());
 </script>
